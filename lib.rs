@@ -44,10 +44,10 @@
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![no_std]
-#![deny(warnings)]
+// #![deny(warnings)]
 #![forbid(unsafe_code)]
 
-#![feature(const_fn)]
+#![feature(min_const_fn)]
 #![feature(i128_type)]
 #![feature(slice_patterns)]
 #![feature(try_from)]
