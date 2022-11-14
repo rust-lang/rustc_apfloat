@@ -53,7 +53,7 @@
 #![feature(try_from)]
 
 #[macro_use]
-extern crate rustc_bitflags;
+extern crate bitflags;
 
 #[macro_use]
 extern crate alloc;
@@ -61,7 +61,7 @@ extern crate alloc;
 use core::cmp::Ordering;
 use core::fmt;
 use core::ops::{Neg, Add, Sub, Mul, Div, Rem};
-use core::ops::{AddAssign, SubAssign, MulAssign, DivAssign, RemAssign, BitOrAssign};
+use core::ops::{AddAssign, SubAssign, MulAssign, DivAssign, RemAssign};
 use core::str::FromStr;
 
 bitflags! {
@@ -69,20 +69,13 @@ bitflags! {
     ///
     /// UNDERFLOW or OVERFLOW are always returned or-ed with INEXACT.
     #[must_use]
-    #[derive(Debug)]
-    flags Status: u8 {
-        const OK = 0x00,
-        const INVALID_OP = 0x01,
-        const DIV_BY_ZERO = 0x02,
-        const OVERFLOW = 0x04,
-        const UNDERFLOW = 0x08,
-        const INEXACT = 0x10
-    }
-}
-
-impl BitOrAssign for Status {
-    fn bitor_assign(&mut self, rhs: Self) {
-        *self = *self | rhs;
+    pub struct Status: u8 {
+        const OK = 0x00;
+        const INVALID_OP = 0x01;
+        const DIV_BY_ZERO = 0x02;
+        const OVERFLOW = 0x04;
+        const UNDERFLOW = 0x08;
+        const INEXACT = 0x10;
     }
 }
 
