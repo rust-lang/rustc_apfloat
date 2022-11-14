@@ -1,0 +1,7 @@
+max_width = 120
+
+# HACK(eddyb) this seems to be used for tuple literals too, and tests use
+# those a lot, in a way really meant to have one (tuple) value per line
+# (also, isn't allowed to be `max_width`, or even one less, but rather
+# depends on indentation levels?! thankfully it's just a warning, though)
+fn_call_width = 120

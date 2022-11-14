@@ -42,9 +42,9 @@ fn limbs_for_bits(bits: usize) -> usize {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Loss {
     // Example of truncated bits:
-    ExactlyZero, // 000000
+    ExactlyZero,  // 000000
     LessThanHalf, // 0xxxxx  x's not all zero
-    ExactlyHalf, // 100000
+    ExactlyHalf,  // 100000
     MoreThanHalf, // 1xxxxx  x's not all zero
 }
 
@@ -264,18 +264,15 @@ impl<S: Semantics> PartialEq for IeeeFloat<S> {
 impl<S: Semantics> PartialOrd for IeeeFloat<S> {
     fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
         match (self.category, rhs.category) {
-            (Category::NaN, _) |
-            (_, Category::NaN) => None,
+            (Category::NaN, _) | (_, Category::NaN) => None,
 
             (Category::Infinity, Category::Infinity) => Some((!self.sign).cmp(&(!rhs.sign))),
 
             (Category::Zero, Category::Zero) => Some(Ordering::Equal),
 
-            (Category::Infinity, _) |
-            (Category::Normal, Category::Zero) => Some((!self.sign).cmp(&self.sign)),
+            (Category::Infinity, _) | (Category::Normal, Category::Zero) => Some((!self.sign).cmp(&self.sign)),
 
-            (_, Category::Infinity) |
-            (Category::Zero, Category::Normal) => Some(rhs.sign.cmp(&(!rhs.sign))),
+            (_, Category::Infinity) | (Category::Zero, Category::Normal) => Some(rhs.sign.cmp(&(!rhs.sign))),
 
             (Category::Normal, Category::Normal) => {
                 // Two normal numbers. Do they have the same sign?
@@ -283,7 +280,11 @@ impl<S: Semantics> PartialOrd for IeeeFloat<S> {
                     // Compare absolute values; invert result if negative.
                     let result = self.cmp_abs_normal(*rhs);
 
-                    if self.sign { result.reverse() } else { result }
+                    if self.sign {
+                        result.reverse()
+                    } else {
+                        result
+                    }
                 }))
             }
         }
@@ -412,8 +413,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
                     p5.push(5);
                 } else {
                     p5_scratch.resize(p5.len() * 2, 0);
-                    let _: Loss =
-                        sig::mul(&mut p5_scratch, &mut 0, &p5, &p5, p5.len() * 2 * LIMB_BITS);
+                    let _: Loss = sig::mul(&mut p5_scratch, &mut 0, &p5, &p5, p5.len() * 2 * LIMB_BITS);
                     while p5_scratch.last() == Some(&0) {
                         p5_scratch.pop();
                     }
@@ -421,13 +421,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
                 }
                 if texp & 1 != 0 {
                     sig_scratch.resize(sig.len() + p5.len(), 0);
-                    let _: Loss = sig::mul(
-                        &mut sig_scratch,
-                        &mut 0,
-                        &sig,
-                        &p5,
-                        (sig.len() + p5.len()) * LIMB_BITS,
-                    );
+                    let _: Loss = sig::mul(&mut sig_scratch, &mut 0, &sig, &p5, (sig.len() + p5.len()) * LIMB_BITS);
                     while sig_scratch.last() == Some(&0) {
                         sig_scratch.pop();
                     }
@@ -617,11 +611,15 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
 
 impl<S: Semantics> fmt::Debug for IeeeFloat<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}({:?} | {}{:?} * 2^{})",
-               self, self.category,
-               if self.sign { "-" } else { "+" },
-               self.sig,
-               self.exp)
+        write!(
+            f,
+            "{}({:?} | {}{:?} * 2^{})",
+            self,
+            self.category,
+            if self.sign { "-" } else { "+" },
+            self.sig,
+            self.exp
+        )
     }
 }
 
@@ -658,13 +656,11 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
     fn qnan(payload: Option<u128>) -> Self {
         IeeeFloat {
-            sig: [
-                S::QNAN_SIGNIFICAND |
-                    payload.map_or(0, |payload| {
-                        // Zero out the excess bits of the significand.
-                        payload & ((1 << S::QNAN_BIT) - 1)
-                    }),
-            ],
+            sig: [S::QNAN_SIGNIFICAND
+                | payload.map_or(0, |payload| {
+                    // Zero out the excess bits of the significand.
+                    payload & ((1 << S::QNAN_BIT) - 1)
+                })],
             exp: S::MAX_EXP + 1,
             category: Category::NaN,
             sign: false,
@@ -739,27 +735,17 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             }
 
             // Sign may depend on rounding mode; handled below.
-            (_, Category::Zero) |
-            (Category::NaN, _) |
-            (Category::Infinity, Category::Normal) => Status::OK,
+            (_, Category::Zero) | (Category::NaN, _) | (Category::Infinity, Category::Normal) => Status::OK,
 
-            (Category::Zero, _) |
-            (_, Category::NaN) |
-            (_, Category::Infinity) => {
+            (Category::Zero, _) | (_, Category::NaN) | (_, Category::Infinity) => {
                 self = rhs;
                 Status::OK
             }
 
             // This return code means it was not a simple case.
             (Category::Normal, Category::Normal) => {
-                let loss = sig::add_or_sub(
-                    &mut self.sig,
-                    &mut self.exp,
-                    &mut self.sign,
-                    &mut [rhs.sig[0]],
-                    rhs.exp,
-                    rhs.sign,
-                );
+                let loss =
+                    sig::add_or_sub(&mut self.sig, &mut self.exp, &mut self.sign, &mut [rhs.sig[0]], rhs.exp, rhs.sign);
                 let status;
                 self = unpack!(status=, self.normalize(round, loss));
 
@@ -773,9 +759,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         // If two numbers add (exactly) to zero, IEEE 754 decrees it is a
         // positive zero unless rounding to minus infinity, except that
         // adding two like-signed zeroes gives that zero.
-        if self.category == Category::Zero &&
-            (rhs.category != Category::Zero || self.sign != rhs.sign)
-        {
+        if self.category == Category::Zero && (rhs.category != Category::Zero || self.sign != rhs.sign) {
             self.sign = round == Round::TowardNegative;
         }
 
@@ -798,17 +782,16 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 Status::OK.and(self)
             }
 
-            (Category::Zero, Category::Infinity) |
-            (Category::Infinity, Category::Zero) => Status::INVALID_OP.and(Self::NAN),
+            (Category::Zero, Category::Infinity) | (Category::Infinity, Category::Zero) => {
+                Status::INVALID_OP.and(Self::NAN)
+            }
 
-            (_, Category::Infinity) |
-            (Category::Infinity, _) => {
+            (_, Category::Infinity) | (Category::Infinity, _) => {
                 self.category = Category::Infinity;
                 Status::OK.and(self)
             }
 
-            (Category::Zero, _) |
-            (_, Category::Zero) => {
+            (Category::Zero, _) | (_, Category::Zero) => {
                 self.category = Category::Zero;
                 Status::OK.and(self)
             }
@@ -816,13 +799,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             (Category::Normal, Category::Normal) => {
                 self.exp += rhs.exp;
                 let mut wide_sig = [0; 2];
-                let loss = sig::mul(
-                    &mut wide_sig,
-                    &mut self.exp,
-                    &self.sig,
-                    &rhs.sig,
-                    S::PRECISION,
-                );
+                let loss = sig::mul(&mut wide_sig, &mut self.exp, &self.sig, &rhs.sig, S::PRECISION);
                 self.sig = [wide_sig[0]];
                 let mut status;
                 self = unpack!(status=, self.normalize(round, loss));
@@ -893,11 +870,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             // Extend the addend significand to ext_precision - 1. This guarantees
             // that the high bit of the significand is zero (same as wide_sig),
             // so the addition will overflow (if it does overflow at all) into the top bit.
-            sig::shift_left(
-                &mut ext_addend_sig,
-                &mut 0,
-                ext_precision - 1 - S::PRECISION,
-            );
+            sig::shift_left(&mut ext_addend_sig, &mut 0, ext_precision - 1 - S::PRECISION);
             loss = sig::add_or_sub(
                 &mut wide_sig,
                 &mut self.exp,
@@ -935,9 +908,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         // If two numbers add (exactly) to zero, IEEE 754 decrees it is a
         // positive zero unless rounding to minus infinity, except that
         // adding two like-signed zeroes gives that zero.
-        if self.category == Category::Zero && !status.intersects(Status::UNDERFLOW) &&
-            self.sign != addend.sign
-        {
+        if self.category == Category::Zero && !status.intersects(Status::UNDERFLOW) && self.sign != addend.sign {
             self.sign = round == Round::TowardNegative;
         }
 
@@ -960,11 +931,11 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 Status::OK.and(self)
             }
 
-            (Category::Infinity, Category::Infinity) |
-            (Category::Zero, Category::Zero) => Status::INVALID_OP.and(Self::NAN),
+            (Category::Infinity, Category::Infinity) | (Category::Zero, Category::Zero) => {
+                Status::INVALID_OP.and(Self::NAN)
+            }
 
-            (Category::Infinity, _) |
-            (Category::Zero, _) => Status::OK.and(self),
+            (Category::Infinity, _) | (Category::Zero, _) => Status::OK.and(self),
 
             (Category::Normal, Category::Infinity) => {
                 self.category = Category::Zero;
@@ -979,13 +950,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             (Category::Normal, Category::Normal) => {
                 self.exp -= rhs.exp;
                 let dividend = self.sig[0];
-                let loss = sig::div(
-                    &mut self.sig,
-                    &mut self.exp,
-                    &mut [dividend],
-                    &mut [rhs.sig[0]],
-                    S::PRECISION,
-                );
+                let loss = sig::div(&mut self.sig, &mut self.exp, &mut [dividend], &mut [rhs.sig[0]], S::PRECISION);
                 let mut status;
                 self = unpack!(status=, self.normalize(round, loss));
                 if loss != Loss::ExactlyZero {
@@ -998,10 +963,10 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
     fn c_fmod(mut self, rhs: Self) -> StatusAnd<Self> {
         match (self.category, rhs.category) {
-            (Category::NaN, _) |
-            (Category::Zero, Category::Infinity) |
-            (Category::Zero, Category::Normal) |
-            (Category::Normal, Category::Infinity) => Status::OK.and(self),
+            (Category::NaN, _)
+            | (Category::Zero, Category::Infinity)
+            | (Category::Zero, Category::Normal)
+            | (Category::Normal, Category::Infinity) => Status::OK.and(self),
 
             (_, Category::NaN) => {
                 self.sign = false;
@@ -1010,12 +975,12 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 Status::OK.and(self)
             }
 
-            (Category::Infinity, _) |
-            (_, Category::Zero) => Status::INVALID_OP.and(Self::NAN),
+            (Category::Infinity, _) | (_, Category::Zero) => Status::INVALID_OP.and(Self::NAN),
 
             (Category::Normal, Category::Normal) => {
-                while self.is_finite_non_zero() && rhs.is_finite_non_zero() &&
-                    self.cmp_abs_normal(rhs) != Ordering::Less
+                while self.is_finite_non_zero()
+                    && rhs.is_finite_non_zero()
+                    && self.cmp_abs_normal(rhs) != Ordering::Less
                 {
                     let mut v = rhs.scalbn(self.ilogb() - rhs.ilogb());
                     if self.cmp_abs_normal(v) == Ordering::Less {
@@ -1115,8 +1080,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                     //   1. exponent != S::MIN_EXP. This implies we are not in the
                     //   smallest binade or are dealing with denormals.
                     //   2. Our significand excluding the integral bit is all zeros.
-                    let crossing_binade_boundary = self.exp != S::MIN_EXP &&
-                        self.sig[0] & sig_mask == 0;
+                    let crossing_binade_boundary = self.exp != S::MIN_EXP && self.sig[0] & sig_mask == 0;
 
                     // Decrement the significand.
                     //
@@ -1149,8 +1113,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                     // the integral bit to 1, and increment the exponent. If we have a
                     // denormal always increment since moving denormals and the numbers in the
                     // smallest normal binade have the same exponent in our representation.
-                    let crossing_binade_boundary = !self.is_denormal() &&
-                        self.sig[0] & sig_mask == sig_mask;
+                    let crossing_binade_boundary = !self.is_denormal() && self.sig[0] & sig_mask == sig_mask;
 
                     if crossing_binade_boundary {
                         self.sig = [0];
@@ -1183,7 +1146,8 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             category: Category::Normal,
             sign: false,
             marker: PhantomData,
-        }.normalize(round, Loss::ExactlyZero)
+        }
+        .normalize(round, Loss::ExactlyZero)
     }
 
     fn from_str_r(mut s: &str, mut round: Round) -> Result<StatusAnd<Self>, ParseError> {
@@ -1291,9 +1255,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 let mut loss = Loss::ExactlyZero;
                 if truncated_bits > 0 {
                     loss = Loss::through_truncation(&self.sig, truncated_bits);
-                    if loss != Loss::ExactlyZero &&
-                        self.round_away_from_zero(round, loss, truncated_bits)
-                    {
+                    if loss != Loss::ExactlyZero && self.round_away_from_zero(round, loss, truncated_bits) {
                         r = r.wrapping_add(1);
                         if r == 0 {
                             return Status::INVALID_OP.and(overflow); // Overflow.
@@ -1321,9 +1283,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         assert!(rhs.is_finite_non_zero());
 
         // If exponents are equal, do an unsigned comparison of the significands.
-        self.exp.cmp(&rhs.exp).then_with(
-            || sig::cmp(&self.sig, &rhs.sig),
-        )
+        self.exp.cmp(&rhs.exp).then_with(|| sig::cmp(&self.sig, &rhs.sig))
     }
 
     fn bitwise_eq(self, rhs: Self) -> bool {
@@ -1347,8 +1307,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     }
 
     fn is_denormal(self) -> bool {
-        self.is_finite_non_zero() && self.exp == S::MIN_EXP &&
-            !sig::get_bit(&self.sig, S::PRECISION - 1)
+        self.is_finite_non_zero() && self.exp == S::MIN_EXP && !sig::get_bit(&self.sig, S::PRECISION - 1)
     }
 
     fn is_signaling(self) -> bool {
@@ -1409,8 +1368,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
         let sig_bits = (S::PRECISION - 1) as ExpInt;
         self.exp += sig_bits;
-        self = self.normalize(Round::NearestTiesToEven, Loss::ExactlyZero)
-            .value;
+        self = self.normalize(Round::NearestTiesToEven, Loss::ExactlyZero).value;
         self.exp - sig_bits
     }
 
@@ -1473,9 +1431,10 @@ impl<S: Semantics, T: Semantics> FloatConvert<IeeeFloat<T>> for IeeeFloat<S> {
         fn is_x87_double_extended<S: Semantics>() -> bool {
             S::QNAN_SIGNIFICAND == X87DoubleExtendedS::QNAN_SIGNIFICAND
         }
-        let x87_special_nan = is_x87_double_extended::<S>() && !is_x87_double_extended::<T>() &&
-            r.category == Category::NaN &&
-            (r.sig[0] & S::QNAN_SIGNIFICAND) != S::QNAN_SIGNIFICAND;
+        let x87_special_nan = is_x87_double_extended::<S>()
+            && !is_x87_double_extended::<T>()
+            && r.category == Category::NaN
+            && (r.sig[0] & S::QNAN_SIGNIFICAND) != S::QNAN_SIGNIFICAND;
 
         // If this is a truncation of a denormal number, and the target semantics
         // has larger exponent range than the source semantics (this can happen
@@ -1594,9 +1553,7 @@ impl<S: Semantics> IeeeFloat<S> {
             // OMSB is numbered from 1. We want to place it in the integer
             // bit numbered PRECISION if possible, with a compensating change in
             // the exponent.
-            let mut final_exp = self.exp.saturating_add(
-                omsb as ExpInt - S::PRECISION as ExpInt,
-            );
+            let mut final_exp = self.exp.saturating_add(omsb as ExpInt - S::PRECISION as ExpInt);
 
             // If the resulting exponent is too high, overflow according to
             // the rounding mode.
@@ -1913,8 +1870,8 @@ impl<S: Semantics> IeeeFloat<S> {
         } else {
             dec_exp = dec_exp.saturating_sub((last_sig_digit - dot) as i32);
         }
-        let significand_digits = last_sig_digit - first_sig_digit + 1 -
-            (dot > first_sig_digit && dot < last_sig_digit) as usize;
+        let significand_digits =
+            last_sig_digit - first_sig_digit + 1 - (dot > first_sig_digit && dot < last_sig_digit) as usize;
         let normalized_exp = dec_exp.saturating_add(significand_digits as i32 - 1);
 
         // Handle the cases where exponents are obviously too large or too
@@ -1939,9 +1896,7 @@ impl<S: Semantics> IeeeFloat<S> {
         }
 
         // Check for MIN_EXP.
-        if normalized_exp.saturating_add(1).saturating_mul(28738) <=
-            8651 * (S::MIN_EXP as i32 - S::PRECISION as i32)
-        {
+        if normalized_exp.saturating_add(1).saturating_mul(28738) <= 8651 * (S::MIN_EXP as i32 - S::PRECISION as i32) {
             // Underflow to zero and round.
             let r = if round == Round::TowardPositive {
                 IeeeFloat::SMALLEST
@@ -2033,13 +1988,7 @@ impl<S: Semantics> IeeeFloat<S> {
 
                 if power & 1 != 0 {
                     r_scratch.resize(r.len() + p5.len(), 0);
-                    let _: Loss = sig::mul(
-                        &mut r_scratch,
-                        &mut 0,
-                        &r,
-                        &p5,
-                        (r.len() + p5.len()) * LIMB_BITS,
-                    );
+                    let _: Loss = sig::mul(&mut r_scratch, &mut 0, &r, &p5, (r.len() + p5.len()) * LIMB_BITS);
                     while r_scratch.last() == Some(&0) {
                         r_scratch.pop();
                     }
@@ -2058,9 +2007,7 @@ impl<S: Semantics> IeeeFloat<S> {
             let calc_precision = (LIMB_BITS << attempt) - 1;
             attempt += 1;
 
-            let calc_normal_from_limbs = |sig: &mut Vec<Limb>,
-                                          limbs: &[Limb]|
-             -> StatusAnd<ExpInt> {
+            let calc_normal_from_limbs = |sig: &mut Vec<Limb>, limbs: &[Limb]| -> StatusAnd<ExpInt> {
                 sig.resize(limbs_for_bits(calc_precision), 0);
                 let (mut loss, mut exp) = sig::from_limbs(sig, limbs, calc_precision);
 
@@ -2142,13 +2089,7 @@ impl<S: Semantics> IeeeFloat<S> {
                 exp += pow5_exp;
 
                 sig_scratch_calc.resize(sig_calc.len() + pow5_calc.len(), 0);
-                calc_loss = sig::mul(
-                    &mut sig_scratch_calc,
-                    &mut exp,
-                    &sig_calc,
-                    &pow5_calc,
-                    calc_precision,
-                );
+                calc_loss = sig::mul(&mut sig_scratch_calc, &mut exp, &sig_calc, &pow5_calc, calc_precision);
                 mem::swap(&mut sig_calc, &mut sig_scratch_calc);
 
                 half_ulp_err2 = (pow5_status != Status::OK) as Limb;
@@ -2156,13 +2097,7 @@ impl<S: Semantics> IeeeFloat<S> {
                 exp -= pow5_exp;
 
                 sig_scratch_calc.resize(sig_calc.len(), 0);
-                calc_loss = sig::div(
-                    &mut sig_scratch_calc,
-                    &mut exp,
-                    &mut sig_calc,
-                    &mut pow5_calc,
-                    calc_precision,
-                );
+                calc_loss = sig::div(&mut sig_scratch_calc, &mut exp, &mut sig_calc, &mut pow5_calc, calc_precision);
                 mem::swap(&mut sig_calc, &mut sig_scratch_calc);
 
                 // Denormal numbers have less precision.
@@ -2171,8 +2106,7 @@ impl<S: Semantics> IeeeFloat<S> {
                     used_bits = calc_precision.saturating_sub(truncated_bits);
                 }
                 // Extra half-ulp lost in reciprocal of exponent.
-                half_ulp_err2 = 2 *
-                    (pow5_status != Status::OK || calc_loss != Loss::ExactlyZero) as Limb;
+                half_ulp_err2 = 2 * (pow5_status != Status::OK || calc_loss != Loss::ExactlyZero) as Limb;
             }
 
             // Both sig::mul and sig::div return the
@@ -2185,9 +2119,7 @@ impl<S: Semantics> IeeeFloat<S> {
             // than the returned value.
             //
             // See "How to Read Floating Point Numbers Accurately" by William D Clinger.
-            assert!(
-                half_ulp_err1 < 2 || half_ulp_err2 < 2 || (half_ulp_err1 + half_ulp_err2 < 8)
-            );
+            assert!(half_ulp_err1 < 2 || half_ulp_err2 < 2 || (half_ulp_err1 + half_ulp_err2 < 8));
 
             let inexact = (calc_loss != Loss::ExactlyZero) as Limb;
             let half_ulp_err = if half_ulp_err1 + half_ulp_err2 == 0 {
@@ -2290,9 +2222,9 @@ impl Loss {
 /// Implementation details of IeeeFloat significands, such as big integer arithmetic.
 /// As a rule of thumb, no functions in this module should dynamically allocate.
 mod sig {
+    use super::{limbs_for_bits, ExpInt, Limb, Loss, LIMB_BITS};
     use core::cmp::Ordering;
     use core::mem;
-    use super::{ExpInt, Limb, LIMB_BITS, limbs_for_bits, Loss};
 
     pub(super) fn is_all_zeros(limbs: &[Limb]) -> bool {
         limbs.iter().all(|&l| l == 0)
@@ -2457,10 +2389,7 @@ mod sig {
 
         if precision <= omsb {
             extract(dst, src, precision, omsb - precision);
-            (
-                Loss::through_truncation(src, omsb - precision),
-                omsb as ExpInt - 1,
-            )
+            (Loss::through_truncation(src, omsb - precision), omsb as ExpInt - 1)
         } else {
             extract(dst, src, omsb, 0);
             (Loss::ExactlyZero, precision as ExpInt - 1)
@@ -2699,7 +2628,6 @@ mod sig {
         divisor: &mut [Limb],
         precision: usize,
     ) -> Loss {
-
         // Normalize the divisor.
         let bits = precision - omsb(divisor);
         shift_left(divisor, &mut 0, bits);
@@ -2725,16 +2653,14 @@ mod sig {
         }
 
         // Helper for figuring out the lost fraction.
-        let lost_fraction = |dividend: &[Limb], divisor: &[Limb]| {
-            match cmp(dividend, divisor) {
-                Ordering::Greater => Loss::MoreThanHalf,
-                Ordering::Equal => Loss::ExactlyHalf,
-                Ordering::Less => {
-                    if is_all_zeros(dividend) {
-                        Loss::ExactlyZero
-                    } else {
-                        Loss::LessThanHalf
-                    }
+        let lost_fraction = |dividend: &[Limb], divisor: &[Limb]| match cmp(dividend, divisor) {
+            Ordering::Greater => Loss::MoreThanHalf,
+            Ordering::Equal => Loss::ExactlyHalf,
+            Ordering::Less => {
+                if is_all_zeros(dividend) {
+                    Loss::ExactlyZero
+                } else {
+                    Loss::LessThanHalf
                 }
             }
         };
@@ -2764,7 +2690,7 @@ mod sig {
 
                     return lost_fraction(&[(rem as Limb) << 1], &[divisor as Limb]);
                 }
-            }
+            };
         }
 
         try_short_div!(u32, u16, 16);
