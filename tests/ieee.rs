@@ -1,5 +1,3 @@
-#![feature(i128_type)]
-
 #[macro_use]
 extern crate rustc_apfloat;
 

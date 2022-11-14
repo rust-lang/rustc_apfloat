@@ -1,5 +1,5 @@
-use {Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
-use {Float, FloatConvert, ParseError, Round, Status, StatusAnd};
+use crate::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
+use crate::{Float, FloatConvert, ParseError, Round, Status, StatusAnd};
 
 use alloc::vec::Vec;
 use core::cmp::{self, Ordering};
@@ -325,7 +325,7 @@ impl<S> Neg for IeeeFloat<S> {
 /// 1.01E-2              4        2       0.0101
 /// 1.01E-2              4        1       1.01E-2
 impl<S: Semantics> fmt::Display for IeeeFloat<S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let width = f.width().unwrap_or(3);
         let alternate = f.alternate();
 
@@ -616,7 +616,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
 }
 
 impl<S: Semantics> fmt::Debug for IeeeFloat<S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}({:?} | {}{:?} * 2^{})",
                self, self.category,
                if self.sign { "-" } else { "+" },
@@ -1425,7 +1425,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         let max_change = S::MAX_EXP as i32 - (S::MIN_EXP as i32 - sig_bits) + 1;
 
         // Clamp to one past the range ends to let normalize handle overflow.
-        let exp_change = cmp::min(cmp::max(exp as i32, (-max_change - 1)), max_change);
+        let exp_change = cmp::min(cmp::max(exp as i32, -max_change - 1), max_change);
         self.exp = self.exp.saturating_add(exp_change as ExpInt);
         self = self.normalize(round, Loss::ExactlyZero).value;
         if self.is_nan() {
@@ -1744,9 +1744,9 @@ impl<S: Semantics> IeeeFloat<S> {
                     } else {
                         loss = Some(match hex_value {
                             0 => Loss::ExactlyZero,
-                            1...7 => Loss::LessThanHalf,
+                            1..=7 => Loss::LessThanHalf,
                             8 => Loss::ExactlyHalf,
-                            9...15 => Loss::MoreThanHalf,
+                            9..=15 => Loss::MoreThanHalf,
                             _ => unreachable!(),
                         });
                     }

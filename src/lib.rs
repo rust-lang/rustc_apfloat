@@ -30,13 +30,8 @@
 //! This API is completely unstable and subject to change.
 
 #![no_std]
-// #![deny(warnings)]
+#![deny(warnings)]
 #![forbid(unsafe_code)]
-
-#![feature(min_const_fn)]
-#![feature(i128_type)]
-#![feature(slice_patterns)]
-#![feature(try_from)]
 
 #[macro_use]
 extern crate bitflags;
