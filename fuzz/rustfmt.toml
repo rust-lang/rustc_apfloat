@@ -1,0 +1,1 @@
+# HACK(eddyb) this resets `rustfmt` config for `fuzz/`, to the usual defaults.
