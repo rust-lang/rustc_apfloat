@@ -1,5 +1,13 @@
 # `rustc_apfloat` (Rust port of C++ `llvm::APFloat` library)
 
+## Licensing
+
+This project is licensed under the [Apache 2] with [LLVM exception] license.
+For a more complete discussion of this project's licensing, see [LICENSE-DETAILS.md](./LICENSE-DETAILS.md).
+
+[Apache 2]: https://spdx.org/licenses/Apache-2.0.html
+[LLVM Exception]: https://spdx.org/licenses/LLVM-exception.html
+
 ## 🚧 Work In Progress 🚧
 
 **NOTE**: the repo (and [`rustc_apfloat-git-history-extraction`](https://github.com/LykenSol/rustc_apfloat-git-history-extraction)) might be public already, but only for convenience of discussion, see [relevant Zulip topic](https://rust-lang.zulipchat.com/#narrow/stream/231349-t-core.2Flicensing/topic/apfloat) for more details.
