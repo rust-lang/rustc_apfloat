@@ -1,7 +1,6 @@
 use crate::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use crate::{Float, FloatConvert, ParseError, Round, Status, StatusAnd};
 
-use alloc::vec::Vec;
 use core::cmp::{self, Ordering};
 use core::convert::TryFrom;
 use core::fmt::{self, Write};
@@ -33,6 +32,21 @@ const LIMB_BITS: usize = 128;
 fn limbs_for_bits(bits: usize) -> usize {
     (bits + LIMB_BITS - 1) / LIMB_BITS
 }
+
+/// Growable `[Limb]` (i.e. heap-allocated and typically `Vec`/`SmallVec`/etc.),
+/// used only by algorithms that may require dynamically arbitrary precision,
+/// i.e. conversions from/to decimal strings.
+///
+/// Note: the specific type was chosen by starting with `SmallVec<[_; 1]>` and
+/// increasing the inline length as long as benchmarks were showing improvements,
+/// or at least the `Double::from_str` ones, which roughly had these behaviors:
+/// * `Vec<_>` -> `SmallVec<[_; 1]>`: ~15% speedup, but only for shorter inputs
+/// * `SmallVec<[_; 1]>` -> `SmallVec<[_; 2]>`: ~10% speedup for longer inputs
+/// * `SmallVec<[_; 2]>` -> `SmallVec<[_; 3]>`: noise and/or diminishing returns
+///
+/// Note: the choice of type described above, and the factors in its decision,
+/// are specific to `Limb` being `u128`, so if `Limb` changes, this should too.
+type DynPrecisionLimbVec = smallvec::SmallVec<[Limb; 2]>;
 
 /// Enum that represents what fraction of the LSB truncated bits of an fp number
 /// represent.
@@ -382,7 +396,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
 
         // Decompose the number into an APInt and an exponent.
         let mut exp = self.exp - (S::PRECISION as ExpInt - 1);
-        let mut sig = vec![self.sig[0]];
+        let mut sig: DynPrecisionLimbVec = [self.sig[0]].into_iter().collect();
 
         // Ignore trailing binary zeros.
         let trailing_zeros = sig[0].trailing_zeros();
@@ -405,9 +419,9 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
 
             // Multiply significand by 5^e.
             //   N * 5^0101 == N * 5^(1*1) * 5^(0*2) * 5^(1*4) * 5^(0*8)
-            let mut sig_scratch = vec![];
-            let mut p5 = vec![];
-            let mut p5_scratch = vec![];
+            let mut sig_scratch = DynPrecisionLimbVec::new();
+            let mut p5 = DynPrecisionLimbVec::new();
+            let mut p5_scratch = DynPrecisionLimbVec::new();
             while texp != 0 {
                 if p5.is_empty() {
                     p5.push(5);
@@ -432,7 +446,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
         }
 
         // Fill the buffer.
-        let mut buffer = vec![];
+        let mut buffer = smallvec::SmallVec::<[u8; 64]>::new();
 
         // Ignore digits from the significand until it is no more
         // precise than is required for the desired precision.
@@ -1911,7 +1925,7 @@ impl<S: Semantics> IeeeFloat<S> {
         // to hold the full significand, and an extra limb required by
         // tcMultiplyPart.
         let max_limbs = limbs_for_bits(1 + 196 * significand_digits / 59);
-        let mut dec_sig = Vec::with_capacity(max_limbs);
+        let mut dec_sig = DynPrecisionLimbVec::with_capacity(max_limbs);
 
         // Convert to binary efficiently - we do almost all multiplication
         // in a Limb. When this would overflow do we do a single
@@ -1970,11 +1984,11 @@ impl<S: Semantics> IeeeFloat<S> {
 
             const FIRST_EIGHT_POWERS: [Limb; 8] = [1, 5, 25, 125, 625, 3125, 15625, 78125];
 
-            let mut p5_scratch = vec![];
-            let mut p5 = vec![FIRST_EIGHT_POWERS[4]];
+            let mut p5_scratch = DynPrecisionLimbVec::new();
+            let mut p5: DynPrecisionLimbVec = [FIRST_EIGHT_POWERS[4]].into_iter().collect();
 
-            let mut r_scratch = vec![];
-            let mut r = vec![FIRST_EIGHT_POWERS[power & 7]];
+            let mut r_scratch = DynPrecisionLimbVec::new();
+            let mut r: DynPrecisionLimbVec = [FIRST_EIGHT_POWERS[power & 7]].into_iter().collect();
             power >>= 3;
 
             while power > 0 {
@@ -2007,7 +2021,7 @@ impl<S: Semantics> IeeeFloat<S> {
             let calc_precision = (LIMB_BITS << attempt) - 1;
             attempt += 1;
 
-            let calc_normal_from_limbs = |sig: &mut Vec<Limb>, limbs: &[Limb]| -> StatusAnd<ExpInt> {
+            let calc_normal_from_limbs = |sig: &mut DynPrecisionLimbVec, limbs: &[Limb]| -> StatusAnd<ExpInt> {
                 sig.resize(limbs_for_bits(calc_precision), 0);
                 let (mut loss, mut exp) = sig::from_limbs(sig, limbs, calc_precision);
 

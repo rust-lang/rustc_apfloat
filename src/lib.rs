@@ -36,7 +36,6 @@
 #[macro_use]
 extern crate bitflags;
 
-#[macro_use]
 extern crate alloc;
 
 use core::cmp::Ordering;
