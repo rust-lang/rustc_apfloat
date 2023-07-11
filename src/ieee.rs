@@ -830,7 +830,18 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         // extended-precision calculation.
         if !self.is_finite_non_zero() || !multiplicand.is_finite_non_zero() || !addend.is_finite() {
             let mut status;
-            self = unpack!(status=, self.mul_r(multiplicand, round));
+            if self.is_finite_non_zero() && multiplicand.is_finite_non_zero() {
+                // HACK(eddyb) this corresponds to the case where the C++ code
+                // (`multiplySpecials`) is effectively a noop: no multiplication
+                // is actually performed, because we're really only here to handle
+                // the "infinite/NaN `addend`" special-case, which needs to ignore
+                // the "finite * finite" multiplication entirely, instead of letting
+                // it e.g. overflow into infinity (and trample over `addend`).
+                assert!(!addend.is_finite());
+                status = Status::OK;
+            } else {
+                self = unpack!(status=, self.mul_r(multiplicand, round));
+            }
 
             // FS can only be Status::OK or Status::INVALID_OP. There is no more work
             // to do in the latter case. The IEEE-754R standard says it is
