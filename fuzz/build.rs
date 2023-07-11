@@ -68,7 +68,7 @@ curl -sS "$llvm_project_tgz_url" | tar -C "$OUT_DIR" -xz
 llvm="$OUT_DIR"/llvm-project-"$llvm_project_git_hash"/llvm
 
 mkdir -p "$OUT_DIR"/fake-config/llvm/Config
-touch "$OUT_DIR"/fake-config/llvm/Config/{abi-breaking,llvm-config}.h
+touch "$OUT_DIR"/fake-config/llvm/Config/{abi-breaking,config,llvm-config}.h
 
 # HACK(eddyb) we want standard `assert`s to work, but `NDEBUG` also controls
 # unrelated LLVM facilities that are spread all over the place and it's harder
@@ -91,8 +91,8 @@ echo | clang++ -x c++ - -std=c++17 \
   $clang_codegen_flags \
   -I "$llvm"/include \
   -I "$OUT_DIR"/fake-config \
-  -DNDEBUG \
-  --include="$llvm"/lib/Support/{APInt,APFloat,SmallVector}.cpp \
+  -DNDEBUG -DHAVE_UNISTD_H \
+  --include="$llvm"/lib/Support/{APInt,APFloat,SmallVector,ErrorHandling}.cpp \
   --include="$OUT_DIR"/cxx_apf_fuzz.cpp \
   -c -emit-llvm -o "$OUT_DIR"/cxx_apf_fuzz.bc
 

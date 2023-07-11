@@ -407,6 +407,10 @@ where
         self.0.category()
     }
 
+    fn is_integer(self) -> bool {
+        self.0.is_integer() && self.1.is_integer()
+    }
+
     fn get_exact_inverse(self) -> Option<Self> {
         Fallback::from(self).get_exact_inverse().map(Self::from)
     }
@@ -427,4 +431,14 @@ where
         }
         DoubleFloat(a, b)
     }
+}
+
+// HACK(eddyb) this is here instead of in `tests/ppc.rs` because `DoubleFloat`
+// has private fields, and it's not worth it to make them public just for testing.
+#[test]
+fn is_integer() {
+    let double_from_f64 = |f: f64| ieee::Double::from_bits(f.to_bits().into());
+    assert!(DoubleFloat(double_from_f64(-0.0), double_from_f64(-0.0)).is_integer());
+    assert!(!DoubleFloat(double_from_f64(3.14159), double_from_f64(-0.0)).is_integer());
+    assert!(!DoubleFloat(double_from_f64(-0.0), double_from_f64(3.14159)).is_integer());
 }
