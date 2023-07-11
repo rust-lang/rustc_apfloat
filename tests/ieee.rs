@@ -861,6 +861,20 @@ fn from_decimal_string() {
 }
 
 #[test]
+fn from_to_string_specials() {
+    assert_eq!("+Inf", "+Inf".parse::<Double>().unwrap().to_string());
+    assert_eq!("+Inf", "INFINITY".parse::<Double>().unwrap().to_string());
+    assert_eq!("+Inf", "inf".parse::<Double>().unwrap().to_string());
+    assert_eq!("-Inf", "-Inf".parse::<Double>().unwrap().to_string());
+    assert_eq!("-Inf", "-INFINITY".parse::<Double>().unwrap().to_string());
+    assert_eq!("-Inf", "-inf".parse::<Double>().unwrap().to_string());
+    assert_eq!("NaN", "NaN".parse::<Double>().unwrap().to_string());
+    assert_eq!("NaN", "nan".parse::<Double>().unwrap().to_string());
+    assert_eq!("NaN", "-NaN".parse::<Double>().unwrap().to_string());
+    assert_eq!("NaN", "-nan".parse::<Double>().unwrap().to_string());
+}
+
+#[test]
 fn from_hexadecimal_string() {
     assert_eq!(1.0, "0x1p0".parse::<Double>().unwrap().to_f64());
     assert_eq!(1.0, "+0x1p0".parse::<Double>().unwrap().to_f64());
@@ -3189,5 +3203,19 @@ fn modulo() {
         let f2 = "1.0".parse::<Double>().unwrap();
         assert!(unpack!(status=, f1 % f2).is_nan());
         assert_eq!(status, Status::INVALID_OP);
+    }
+    {
+        let f1 = "-4.0".parse::<Double>().unwrap();
+        let f2 = "-2.0".parse::<Double>().unwrap();
+        let expected = "-0.0".parse::<Double>().unwrap();
+        assert!(unpack!(status=, f1 % f2).bitwise_eq(expected));
+        assert_eq!(status, Status::OK);
+    }
+    {
+        let f1 = "-4.0".parse::<Double>().unwrap();
+        let f2 = "2.0".parse::<Double>().unwrap();
+        let expected = "-0.0".parse::<Double>().unwrap();
+        assert!(unpack!(status=, f1 % f2).bitwise_eq(expected));
+        assert_eq!(status, Status::OK);
     }
 }

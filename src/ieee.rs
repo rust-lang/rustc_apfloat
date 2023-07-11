@@ -1003,6 +1003,8 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             (Category::Infinity, _) | (_, Category::Zero) => Status::INVALID_OP.and(Self::NAN),
 
             (Category::Normal, Category::Normal) => {
+                let orig_sign = self.sign;
+
                 while self.is_finite_non_zero()
                     && rhs.is_finite_non_zero()
                     && self.cmp_abs_normal(rhs) != Ordering::Less
@@ -1016,6 +1018,9 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                     let status;
                     self = unpack!(status=, self - v);
                     assert_eq!(status, Status::OK);
+                }
+                if self.is_zero() {
+                    self.sign = orig_sign;
                 }
                 Status::OK.and(self)
             }
@@ -1182,8 +1187,8 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
         // Handle special cases.
         match s {
-            "inf" | "INFINITY" => return Ok(Status::OK.and(Self::INFINITY)),
-            "-inf" | "-INFINITY" => return Ok(Status::OK.and(-Self::INFINITY)),
+            "inf" | "INFINITY" | "+Inf" => return Ok(Status::OK.and(Self::INFINITY)),
+            "-inf" | "-INFINITY" | "-Inf" => return Ok(Status::OK.and(-Self::INFINITY)),
             "nan" | "NaN" => return Ok(Status::OK.and(Self::NAN)),
             "-nan" | "-NaN" => return Ok(Status::OK.and(-Self::NAN)),
             _ => {}
