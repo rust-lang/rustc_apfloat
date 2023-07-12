@@ -1,6 +1,6 @@
 //! Tests added to `rustc_apfloat`, that were not ported from the C++ code.
 
-use rustc_apfloat::ieee::{Double, Single};
+use rustc_apfloat::ieee::{Double, Single, X87DoubleExtended};
 use rustc_apfloat::Float;
 
 // `f32 -> i128 -> f32` previously-crashing bit-patterns (found by fuzzing).
@@ -383,5 +383,31 @@ fn fuzz_fma_with_expected_outputs() {
         let (a, b, c) =
             (Double::from_bits(a_bits.into()), Double::from_bits(b_bits.into()), Double::from_bits(c_bits.into()));
         assert_eq!(a.mul_add(b, c).value.to_bits(), expected_bits.into());
+    }
+}
+
+// x87 80-bit "extended precision"/`long double` bit-patterns which used to
+// produce the wrong output when negated (found by fuzzing - though fuzzing also
+// found many examples in all ops, as the root issue was the handling of the
+// bit-level encoding itself, but negation was the easiest op to test here).
+pub const FUZZ_X87_F80_NEG_CASES_WITH_EXPECTED_OUTPUTS: &[(u128, u128)] = &[
+    (
+        0x01010101010100000000, /* 3.05337213397376214408E-4857 */
+        0x81010101010100000000, /* -3.05337213397376214408E-4857 */
+    ),
+    (
+        0x0000ff7f2300ff000000, /* 6.71098449692300485303E-4932 */
+        0x8001ff7f2300ff000000, /* -6.71098449692300485303E-4932 */
+    ),
+    (
+        0x00008000000000000000, /* 3.36210314311209350626E-4932 */
+        0x80018000000000000000, /* -3.36210314311209350626E-4932 */
+    ),
+];
+
+#[test]
+fn fuzz_x87_f80_neg_with_expected_outputs() {
+    for &(bits, expected_bits) in FUZZ_X87_F80_NEG_CASES_WITH_EXPECTED_OUTPUTS {
+        assert_eq!((-X87DoubleExtended::from_bits(bits)).to_bits(), expected_bits);
     }
 }

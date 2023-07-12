@@ -82,7 +82,7 @@ pub trait Semantics: Sized {
     const QNAN_BIT: usize = Self::PRECISION - 2;
 
     /// The significand bitpattern to mark a NaN as quiet.
-    /// NOTE: for X87DoubleExtended we need to set two bits instead of 2.
+    /// NOTE: for X87DoubleExtended we need to set two bits instead of 1.
     const QNAN_SIGNIFICAND: Limb = 1 << Self::QNAN_BIT;
 
     fn from_bits(bits: u128) -> IeeeFloat<Self> {
@@ -206,7 +206,7 @@ impl Semantics for X87DoubleExtendedS {
         let sign = bits & (1 << (Self::BITS - 1));
         let exponent = (bits & !sign) >> Self::PRECISION;
         let mut r = IeeeFloat {
-            sig: [bits & ((1 << (Self::PRECISION - 1)) - 1)],
+            sig: [bits & ((1 << Self::PRECISION) - 1)],
             // Convert the exponent from its bias representation to a signed integer.
             exp: (exponent as ExpInt) - Self::MAX_EXP,
             category: Category::Zero,
