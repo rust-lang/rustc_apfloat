@@ -391,10 +391,7 @@ fn fuzz_fma_with_expected_outputs() {
 // found many examples in all ops, as the root issue was the handling of the
 // bit-level encoding itself, but negation was the easiest op to test here).
 pub const FUZZ_X87_F80_NEG_CASES_WITH_EXPECTED_OUTPUTS: &[(u128, u128)] = &[
-    (
-        0x01010101010100000000, /* 3.05337213397376214408E-4857 */
-        0x81010101010100000000, /* -3.05337213397376214408E-4857 */
-    ),
+    (0x01010101010100000000 /* NaN */, 0xffff0101010100000000 /* NaN */),
     (
         0x0000ff7f2300ff000000, /* 6.71098449692300485303E-4932 */
         0x8001ff7f2300ff000000, /* -6.71098449692300485303E-4932 */

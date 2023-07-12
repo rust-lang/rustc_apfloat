@@ -591,6 +591,38 @@ fn max_num() {
 }
 
 #[test]
+fn minimum() {
+    let f1 = Double::from_f64(1.0);
+    let f2 = Double::from_f64(2.0);
+    let zp = Double::from_f64(0.0);
+    let zn = Double::from_f64(-0.0);
+    let nan = Double::NAN;
+
+    assert_eq!(1.0, f1.minimum(f2).to_f64());
+    assert_eq!(1.0, f2.minimum(f1).to_f64());
+    assert_eq!(-0.0, zp.minimum(zn).to_f64());
+    assert_eq!(-0.0, zn.minimum(zp).to_f64());
+    assert!(f1.minimum(nan).to_f64().is_nan());
+    assert!(nan.minimum(f1).to_f64().is_nan());
+}
+
+#[test]
+fn maximum() {
+    let f1 = Double::from_f64(1.0);
+    let f2 = Double::from_f64(2.0);
+    let zp = Double::from_f64(0.0);
+    let zn = Double::from_f64(-0.0);
+    let nan = Double::NAN;
+
+    assert_eq!(2.0, f1.maximum(f2).to_f64());
+    assert_eq!(2.0, f2.maximum(f1).to_f64());
+    assert_eq!(0.0, zp.maximum(zn).to_f64());
+    assert_eq!(0.0, zn.maximum(zp).to_f64());
+    assert!(f1.maximum(nan).to_f64().is_nan());
+    assert!(nan.maximum(f1).to_f64().is_nan());
+}
+
+#[test]
 fn denormal() {
     // Test single precision
     {
@@ -1003,6 +1035,7 @@ fn to_string() {
     assert_eq!("873.18340000000001", to_string(873.1834, 0, 1));
     assert_eq!("8.73183400000000010e+02", to_string(873.1834, 0, 0));
     assert_eq!("1.79769313486231570e+308", to_string(1.7976931348623157E+308, 0, 0));
+    assert_eq!("NaN", X87DoubleExtended::from_bits(1 << 64).to_string());
 }
 
 #[test]
@@ -1072,11 +1105,11 @@ fn to_integer() {
 
 #[test]
 fn nan() {
-    fn nanbits<T: Float>(signaling: bool, negative: bool, fill: u128) -> u128 {
+    fn nanbits_from_u128<T: Float>(signaling: bool, negative: bool, payload: u128) -> u128 {
         let x = if signaling {
-            T::snan(Some(fill))
+            T::snan(Some(payload))
         } else {
-            T::qnan(Some(fill))
+            T::qnan(Some(payload))
         };
         if negative {
             (-x).to_bits()
@@ -1085,23 +1118,38 @@ fn nan() {
         }
     }
 
-    assert_eq!(0x7fc00000, nanbits::<Single>(false, false, 0));
-    assert_eq!(0xffc00000, nanbits::<Single>(false, true, 0));
-    assert_eq!(0x7fc0ae72, nanbits::<Single>(false, false, 0xae72));
-    assert_eq!(0x7fffae72, nanbits::<Single>(false, false, 0xffffae72));
-    assert_eq!(0x7fa00000, nanbits::<Single>(true, false, 0));
-    assert_eq!(0xffa00000, nanbits::<Single>(true, true, 0));
-    assert_eq!(0x7f80ae72, nanbits::<Single>(true, false, 0xae72));
-    assert_eq!(0x7fbfae72, nanbits::<Single>(true, false, 0xffffae72));
-
-    assert_eq!(0x7ff8000000000000, nanbits::<Double>(false, false, 0));
-    assert_eq!(0xfff8000000000000, nanbits::<Double>(false, true, 0));
-    assert_eq!(0x7ff800000000ae72, nanbits::<Double>(false, false, 0xae72));
-    assert_eq!(0x7fffffffffffae72, nanbits::<Double>(false, false, 0xffffffffffffae72));
-    assert_eq!(0x7ff4000000000000, nanbits::<Double>(true, false, 0));
-    assert_eq!(0xfff4000000000000, nanbits::<Double>(true, true, 0));
-    assert_eq!(0x7ff000000000ae72, nanbits::<Double>(true, false, 0xae72));
-    assert_eq!(0x7ff7ffffffffae72, nanbits::<Double>(true, false, 0xffffffffffffae72));
+    let tests_single = [
+        // expected   SNaN    Neg     payload
+        (0x7fc00000, false, false, 0x00000000),
+        (0xffc00000, false, true, 0x00000000),
+        (0x7fc0ae72, false, false, 0x0000ae72),
+        (0x7fffae72, false, false, 0xffffae72),
+        (0x7fdaae72, false, false, 0x00daae72),
+        (0x7fa00000, true, false, 0x00000000),
+        (0xffa00000, true, true, 0x00000000),
+        (0x7f80ae72, true, false, 0x0000ae72),
+        (0x7fbfae72, true, false, 0xffffae72),
+        (0x7f9aae72, true, false, 0x001aae72),
+    ];
+    let tests_double = [
+        //         expected   SNaN    Neg             payload
+        (0x7ff8000000000000, false, false, 0x0000000000000000),
+        (0xfff8000000000000, false, true, 0x0000000000000000),
+        (0x7ff800000000ae72, false, false, 0x000000000000ae72),
+        (0x7fffffffffffae72, false, false, 0xffffffffffffae72),
+        (0x7ffdaaaaaaaaae72, false, false, 0x000daaaaaaaaae72),
+        (0x7ff4000000000000, true, false, 0x0000000000000000),
+        (0xfff4000000000000, true, true, 0x0000000000000000),
+        (0x7ff000000000ae72, true, false, 0x000000000000ae72),
+        (0x7ff7ffffffffae72, true, false, 0xffffffffffffae72),
+        (0x7ff1aaaaaaaaae72, true, false, 0x0001aaaaaaaaae72),
+    ];
+    for (expected, signaling, negative, payload) in tests_single {
+        assert_eq!(expected, nanbits_from_u128::<Single>(signaling, negative, payload));
+    }
+    for (expected, signaling, negative, payload) in tests_double {
+        assert_eq!(expected, nanbits_from_u128::<Double>(signaling, negative, payload));
+    }
 }
 
 #[test]
