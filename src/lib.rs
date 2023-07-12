@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! https://github.com/llvm/llvm-project/commit/69f6098e89312b934ed87e4cd3603401a9b436b4
+//! https://github.com/llvm/llvm-project/commit/2b6b8cb10c870d64f7cc29d21fc27cef3c7e0056
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -48,6 +48,11 @@ bitflags! {
     /// IEEE-754R 7: Default exception handling.
     ///
     /// UNDERFLOW or OVERFLOW are always returned or-ed with INEXACT.
+    ///
+    /// APFloat models this behavior specified by IEEE-754:
+    ///   "For operations producing results in floating-point format, the default
+    ///    result of an operation that signals the invalid operation exception
+    ///    shall be a quiet NaN."
     #[must_use]
     pub struct Status: u8 {
         const OK = 0x00;
@@ -132,7 +137,7 @@ impl Neg for Round {
 }
 
 /// A signed type to represent a floating point number's unbiased exponent.
-pub type ExpInt = i16;
+pub type ExpInt = i32;
 
 // \c ilogb error results.
 pub const IEK_INF: ExpInt = ExpInt::max_value();

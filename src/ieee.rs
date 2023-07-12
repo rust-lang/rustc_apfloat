@@ -1866,17 +1866,18 @@ impl<S: Semantics> IeeeFloat<S> {
                     chars.next();
                 }
 
-                any_digits = false;
+                let mut any_exp_digits = false;
                 for c in chars {
                     if let Some(value) = c.to_digit(10) {
-                        any_digits = true;
+                        any_exp_digits = true;
                         dec_exp = dec_exp.saturating_mul(10).saturating_add(value as i32);
                     } else {
                         return Err(ParseError("Invalid character in exponent"));
                     }
                 }
-                if !any_digits {
-                    return Err(ParseError("Exponent has no digits"));
+                // Treat no exponent as 0 to match binutils
+                if !any_exp_digits {
+                    assert_eq!(dec_exp, 0);
                 }
 
                 if exp_minus {
@@ -2512,23 +2513,22 @@ mod sig {
         // an addition or subtraction.
         // Subtraction is more subtle than one might naively expect.
         if *a_sign ^ b_sign {
-            let (reverse, loss);
+            let loss;
 
             if bits == 0 {
-                reverse = cmp(a_sig, b_sig) == Ordering::Less;
                 loss = Loss::ExactlyZero;
             } else if bits > 0 {
                 loss = shift_right(b_sig, &mut 0, (bits - 1) as usize);
                 shift_left(a_sig, a_exp, 1);
-                reverse = false;
             } else {
                 loss = shift_right(a_sig, a_exp, (-bits - 1) as usize);
                 shift_left(b_sig, &mut 0, 1);
-                reverse = true;
             }
 
             let borrow = (loss != Loss::ExactlyZero) as Limb;
-            if reverse {
+
+            // Should we reverse the subtraction.
+            if cmp(a_sig, b_sig) == Ordering::Less {
                 // The code above is intended to ensure that no borrow is necessary.
                 assert_eq!(sub(b_sig, a_sig, borrow), 0);
                 a_sig.copy_from_slice(b_sig);

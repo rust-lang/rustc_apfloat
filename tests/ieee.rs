@@ -564,6 +564,15 @@ fn fma() {
         assert!(!loses_info);
         assert_eq!(4.0, r.to_f32());
     }
+
+    // Regression test that failed an assertion.
+    {
+        let mut f1 = Single::from_f32(-8.85242279E-41);
+        let f2 = Single::from_f32(2.0);
+        let f3 = Single::from_f32(8.85242279E-41);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(-8.85242279E-41, f1.to_f32());
+    }
 }
 
 #[test]
@@ -626,25 +635,23 @@ fn maximum() {
 fn denormal() {
     // Test single precision
     {
-        assert!(!Single::from_f32(0.0).is_denormal());
+        assert!(!Single::from_u128(0).value.is_denormal());
 
         let mut t = "1.17549435082228750797e-38".parse::<Single>().unwrap();
         assert!(!t.is_denormal());
 
-        let val2 = Single::from_f32(2.0e0);
-        t /= val2;
+        t /= Single::from_u128(2).value;
         assert!(t.is_denormal());
     }
 
     // Test double precision
     {
-        assert!(!Double::from_f64(0.0).is_denormal());
+        assert!(!Double::from_u128(0).value.is_denormal());
 
         let mut t = "2.22507385850720138309e-308".parse::<Double>().unwrap();
         assert!(!t.is_denormal());
 
-        let val2 = Double::from_f64(2.0e0);
-        t /= val2;
+        t /= Double::from_u128(2).value;
         assert!(t.is_denormal());
     }
 
@@ -881,6 +888,33 @@ fn from_decimal_string() {
     assert_eq!(2.05e12, "002.05000e12".parse::<Double>().unwrap().to_f64());
     assert_eq!(2.05e+12, "002.05000e+12".parse::<Double>().unwrap().to_f64());
     assert_eq!(2.05e-12, "002.05000e-12".parse::<Double>().unwrap().to_f64());
+
+    assert_eq!(1.0, "1e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(1.0, "+1e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(-1.0, "-1e".parse::<Double>().unwrap().to_f64());
+
+    assert_eq!(1.0, "1.e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(1.0, "+1.e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(-1.0, "-1.e".parse::<Double>().unwrap().to_f64());
+
+    assert_eq!(0.1, ".1e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(0.1, "+.1e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(-0.1, "-.1e".parse::<Double>().unwrap().to_f64());
+
+    assert_eq!(1.1, "1.1e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(1.1, "+1.1e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(-1.1, "-1.1e".parse::<Double>().unwrap().to_f64());
+
+    assert_eq!(1.0, "1e+".parse::<Double>().unwrap().to_f64());
+    assert_eq!(1.0, "1e-".parse::<Double>().unwrap().to_f64());
+
+    assert_eq!(0.1, ".1e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(0.1, ".1e+".parse::<Double>().unwrap().to_f64());
+    assert_eq!(0.1, ".1e-".parse::<Double>().unwrap().to_f64());
+
+    assert_eq!(1.0, "1.0e".parse::<Double>().unwrap().to_f64());
+    assert_eq!(1.0, "1.0e+".parse::<Double>().unwrap().to_f64());
+    assert_eq!(1.0, "1.0e-".parse::<Double>().unwrap().to_f64());
 
     // These are "carefully selected" to overflow the fast log-base
     // calculations in the implementation.
@@ -1194,36 +1228,6 @@ fn string_decimal_significand_death() {
     assert_eq!(".e".parse::<Double>(), Err(ParseError("Significand has no digits")));
     assert_eq!("+.e".parse::<Double>(), Err(ParseError("Significand has no digits")));
     assert_eq!("-.e".parse::<Double>(), Err(ParseError("Significand has no digits")));
-}
-
-#[test]
-fn string_decimal_exponent_death() {
-    assert_eq!("1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("+1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("-1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-
-    assert_eq!("1.e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("+1.e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("-1.e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-
-    assert_eq!(".1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("+.1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("-.1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-
-    assert_eq!("1.1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("+1.1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("-1.1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-
-    assert_eq!("1e+".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("1e-".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-
-    assert_eq!(".1e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!(".1e+".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!(".1e-".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-
-    assert_eq!("1.0e".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("1.0e+".parse::<Double>(), Err(ParseError("Exponent has no digits")));
-    assert_eq!("1.0e-".parse::<Double>(), Err(ParseError("Exponent has no digits")));
 }
 
 #[test]
@@ -2255,10 +2259,14 @@ fn multiply() {
     let p_smallest_normalized = Single::smallest_normalized();
     let m_smallest_normalized = -Single::smallest_normalized();
 
+    let max_quad = "0x1.ffffffffffffffffffffffffffffp+16383".parse::<Quad>().unwrap();
+    let min_quad = "0x0.0000000000000000000000000001p-16382".parse::<Quad>().unwrap();
+    let n_min_quad = "-0x0.0000000000000000000000000001p-16382".parse::<Quad>().unwrap();
+
     let overflow_status = Status::OVERFLOW | Status::INEXACT;
     let underflow_status = Status::UNDERFLOW | Status::INEXACT;
 
-    let special_cases = [
+    let single_special_cases = [
         (p_inf, p_inf, "inf", Status::OK, Category::Infinity),
         (p_inf, m_inf, "-inf", Status::OK, Category::Infinity),
         (p_inf, p_zero, "nan", Status::INVALID_OP, Category::NaN),
@@ -2498,13 +2506,138 @@ fn multiply() {
         (m_smallest_normalized, p_smallest_normalized, "-0x0p+0", underflow_status, Category::Zero),
         (m_smallest_normalized, m_smallest_normalized, "0x0p+0", underflow_status, Category::Zero),
     ];
+    let quad_special_cases = [
+        (
+            max_quad,
+            min_quad,
+            "0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::NearestTiesToEven,
+        ),
+        (
+            max_quad,
+            min_quad,
+            "0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::TowardPositive,
+        ),
+        (
+            max_quad,
+            min_quad,
+            "0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::TowardNegative,
+        ),
+        (max_quad, min_quad, "0x1.ffffffffffffffffffffffffffffp-111", Status::OK, Category::Normal, Round::TowardZero),
+        (
+            max_quad,
+            min_quad,
+            "0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::NearestTiesToAway,
+        ),
+        (
+            max_quad,
+            n_min_quad,
+            "-0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::NearestTiesToEven,
+        ),
+        (
+            max_quad,
+            n_min_quad,
+            "-0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::TowardPositive,
+        ),
+        (
+            max_quad,
+            n_min_quad,
+            "-0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::TowardNegative,
+        ),
+        (
+            max_quad,
+            n_min_quad,
+            "-0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::TowardZero,
+        ),
+        (
+            max_quad,
+            n_min_quad,
+            "-0x1.ffffffffffffffffffffffffffffp-111",
+            Status::OK,
+            Category::Normal,
+            Round::NearestTiesToAway,
+        ),
+        (max_quad, max_quad, "inf", overflow_status, Category::Infinity, Round::NearestTiesToEven),
+        (max_quad, max_quad, "inf", overflow_status, Category::Infinity, Round::TowardPositive),
+        (
+            max_quad,
+            max_quad,
+            "0x1.ffffffffffffffffffffffffffffp+16383",
+            Status::INEXACT,
+            Category::Normal,
+            Round::TowardNegative,
+        ),
+        (
+            max_quad,
+            max_quad,
+            "0x1.ffffffffffffffffffffffffffffp+16383",
+            Status::INEXACT,
+            Category::Normal,
+            Round::TowardZero,
+        ),
+        (max_quad, max_quad, "inf", overflow_status, Category::Infinity, Round::NearestTiesToAway),
+        (min_quad, min_quad, "0", underflow_status, Category::Zero, Round::NearestTiesToEven),
+        (
+            min_quad,
+            min_quad,
+            "0x0.0000000000000000000000000001p-16382",
+            underflow_status,
+            Category::Normal,
+            Round::TowardPositive,
+        ),
+        (min_quad, min_quad, "0", underflow_status, Category::Zero, Round::TowardNegative),
+        (min_quad, min_quad, "0", underflow_status, Category::Zero, Round::TowardZero),
+        (min_quad, min_quad, "0", underflow_status, Category::Zero, Round::NearestTiesToAway),
+        (min_quad, n_min_quad, "-0", underflow_status, Category::Zero, Round::NearestTiesToEven),
+        (min_quad, n_min_quad, "-0", underflow_status, Category::Zero, Round::TowardPositive),
+        (
+            min_quad,
+            n_min_quad,
+            "-0x0.0000000000000000000000000001p-16382",
+            underflow_status,
+            Category::Normal,
+            Round::TowardNegative,
+        ),
+        (min_quad, n_min_quad, "-0", underflow_status, Category::Zero, Round::TowardZero),
+        (min_quad, n_min_quad, "-0", underflow_status, Category::Zero, Round::NearestTiesToAway),
+    ];
 
-    for &(x, y, e_result, e_status, e_category) in &special_cases[..] {
+    for &(x, y, e_result, e_status, e_category) in &single_special_cases {
         let status;
         let result = unpack!(status=, x * y);
         assert_eq!(status, e_status);
         assert_eq!(result.category(), e_category);
         assert!(result.bitwise_eq(e_result.parse::<Single>().unwrap()));
+    }
+    for &(x, y, e_result, e_status, e_category, round) in &quad_special_cases {
+        let status;
+        let result = unpack!(status=, x.mul_r(y, round));
+        assert_eq!(status, e_status);
+        assert_eq!(result.category(), e_category);
+        assert!(result.bitwise_eq(e_result.parse::<Quad>().unwrap()));
     }
 }
 
@@ -2531,10 +2664,14 @@ fn divide() {
     let p_smallest_normalized = Single::smallest_normalized();
     let m_smallest_normalized = -Single::smallest_normalized();
 
+    let max_quad = "0x1.ffffffffffffffffffffffffffffp+16383".parse::<Quad>().unwrap();
+    let min_quad = "0x0.0000000000000000000000000001p-16382".parse::<Quad>().unwrap();
+    let n_min_quad = "-0x0.0000000000000000000000000001p-16382".parse::<Quad>().unwrap();
+
     let overflow_status = Status::OVERFLOW | Status::INEXACT;
     let underflow_status = Status::UNDERFLOW | Status::INEXACT;
 
-    let special_cases = [
+    let single_special_cases = [
         (p_inf, p_inf, "nan", Status::INVALID_OP, Category::NaN),
         (p_inf, m_inf, "nan", Status::INVALID_OP, Category::NaN),
         (p_inf, p_zero, "inf", Status::OK, Category::Infinity),
@@ -2774,13 +2911,65 @@ fn divide() {
         (m_smallest_normalized, p_smallest_normalized, "-0x1p+0", Status::OK, Category::Normal),
         (m_smallest_normalized, m_smallest_normalized, "0x1p+0", Status::OK, Category::Normal),
     ];
+    let quad_special_cases = [
+        (max_quad, n_min_quad, "-inf", overflow_status, Category::Infinity, Round::NearestTiesToEven),
+        (
+            max_quad,
+            n_min_quad,
+            "-0x1.ffffffffffffffffffffffffffffp+16383",
+            Status::INEXACT,
+            Category::Normal,
+            Round::TowardPositive,
+        ),
+        (max_quad, n_min_quad, "-inf", overflow_status, Category::Infinity, Round::TowardNegative),
+        (
+            max_quad,
+            n_min_quad,
+            "-0x1.ffffffffffffffffffffffffffffp+16383",
+            Status::INEXACT,
+            Category::Normal,
+            Round::TowardZero,
+        ),
+        (max_quad, n_min_quad, "-inf", overflow_status, Category::Infinity, Round::NearestTiesToAway),
+        (min_quad, max_quad, "0", underflow_status, Category::Zero, Round::NearestTiesToEven),
+        (
+            min_quad,
+            max_quad,
+            "0x0.0000000000000000000000000001p-16382",
+            underflow_status,
+            Category::Normal,
+            Round::TowardPositive,
+        ),
+        (min_quad, max_quad, "0", underflow_status, Category::Zero, Round::TowardNegative),
+        (min_quad, max_quad, "0", underflow_status, Category::Zero, Round::TowardZero),
+        (min_quad, max_quad, "0", underflow_status, Category::Zero, Round::NearestTiesToAway),
+        (n_min_quad, max_quad, "-0", underflow_status, Category::Zero, Round::NearestTiesToEven),
+        (n_min_quad, max_quad, "-0", underflow_status, Category::Zero, Round::TowardPositive),
+        (
+            n_min_quad,
+            max_quad,
+            "-0x0.0000000000000000000000000001p-16382",
+            underflow_status,
+            Category::Normal,
+            Round::TowardNegative,
+        ),
+        (n_min_quad, max_quad, "-0", underflow_status, Category::Zero, Round::TowardZero),
+        (n_min_quad, max_quad, "-0", underflow_status, Category::Zero, Round::NearestTiesToAway),
+    ];
 
-    for &(x, y, e_result, e_status, e_category) in &special_cases[..] {
+    for &(x, y, e_result, e_status, e_category) in &single_special_cases {
         let status;
         let result = unpack!(status=, x / y);
         assert_eq!(status, e_status);
         assert_eq!(result.category(), e_category);
         assert!(result.bitwise_eq(e_result.parse::<Single>().unwrap()));
+    }
+    for &(x, y, e_result, e_status, e_category, round) in &quad_special_cases {
+        let status;
+        let result = unpack!(status=, x.div_r(y, round));
+        assert_eq!(status, e_status);
+        assert_eq!(result.category(), e_category);
+        assert!(result.bitwise_eq(e_result.parse::<Quad>().unwrap()));
     }
 }
 
