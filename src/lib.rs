@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! https://github.com/llvm/llvm-project/commit/768d6dd08783440606da83dac490889329619898
+//! https://github.com/llvm/llvm-project/commit/69f6098e89312b934ed87e4cd3603401a9b436b4
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -449,6 +449,46 @@ pub trait Float:
             other
         } else if other.is_nan() {
             self
+        } else if self.partial_cmp(&other) == Some(Ordering::Less) {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// Implements IEEE 754-2018 minimum semantics. Returns the smaller of 2
+    /// arguments, propagating NaNs and treating -0 as less than +0.
+    fn minimum(self, other: Self) -> Self {
+        if self.is_nan() {
+            self
+        } else if other.is_nan() {
+            other
+        } else if self.is_zero() && other.is_zero() && self.is_negative() != other.is_negative() {
+            if self.is_negative() {
+                self
+            } else {
+                other
+            }
+        } else if other.partial_cmp(&self) == Some(Ordering::Less) {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// Implements IEEE 754-2018 maximum semantics. Returns the larger of 2
+    /// arguments, propagating NaNs and treating -0 as less than +0.
+    fn maximum(self, other: Self) -> Self {
+        if self.is_nan() {
+            self
+        } else if other.is_nan() {
+            other
+        } else if self.is_zero() && other.is_zero() && self.is_negative() != other.is_negative() {
+            if self.is_negative() {
+                other
+            } else {
+                self
+            }
         } else if self.partial_cmp(&other) == Some(Ordering::Less) {
             other
         } else {

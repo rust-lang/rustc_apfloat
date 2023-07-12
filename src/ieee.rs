@@ -199,9 +199,9 @@ impl Semantics for X87DoubleExtendedS {
     /// does not support these bit patterns:
     ///  exponent = all 1's, integer bit 0, significand 0 ("pseudoinfinity")
     ///  exponent = all 1's, integer bit 0, significand nonzero ("pseudoNaN")
-    ///  exponent = 0, integer bit 1 ("pseudodenormal")
     ///  exponent!=0 nor all 1's, integer bit 0 ("unnormal")
-    /// At the moment, the first two are treated as NaNs, the second two as Normal.
+    ///  exponent = 0, integer bit 1 ("pseudodenormal")
+    /// At the moment, the first three are treated as NaNs, the last one as Normal.
     fn from_bits(bits: u128) -> IeeeFloat<Self> {
         let sign = bits & (1 << (Self::BITS - 1));
         let exponent = (bits & !sign) >> Self::PRECISION;
@@ -214,13 +214,17 @@ impl Semantics for X87DoubleExtendedS {
             marker: PhantomData,
         };
 
+        let integer_bit = r.sig[0] >> (Self::PRECISION - 1);
+
         if r.exp == Self::MIN_EXP - 1 && r.sig == [0] {
             // Exponent, significand meaningless.
             r.category = Category::Zero;
         } else if r.exp == Self::MAX_EXP + 1 && r.sig == [1 << (Self::PRECISION - 1)] {
             // Exponent, significand meaningless.
             r.category = Category::Infinity;
-        } else if r.exp == Self::MAX_EXP + 1 && r.sig != [1 << (Self::PRECISION - 1)] {
+        } else if r.exp == Self::MAX_EXP + 1 && r.sig != [1 << (Self::PRECISION - 1)]
+            || r.exp != Self::MAX_EXP + 1 && r.exp != Self::MIN_EXP - 1 && integer_bit == 0
+        {
             // Sign, exponent, significand meaningless.
             r.category = Category::NaN;
         } else {
