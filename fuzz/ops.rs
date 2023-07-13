@@ -12,8 +12,8 @@ struct Cxx<T>(T);
 
 use self::OpKind::*;
 enum OpKind {
-    Unary(Rust<char>, Cxx<&'static str>),
-    Binary(Rust<char>, Cxx<&'static str>),
+    Unary(char),
+    Binary(char),
     Ternary(Rust<&'static str>, Cxx<&'static str>),
 
     // HACK(eddyb) all other ops have floating-point inputs *and* outputs, so
@@ -39,8 +39,8 @@ impl Type {
 impl OpKind {
     fn inputs<'a, T>(&self, all_inputs: &'a [T; 3]) -> &'a [T] {
         match self {
-            Unary(..) | Roundtrip(_) => &all_inputs[..1],
-            Binary(..) => &all_inputs[..2],
+            Unary(_) | Roundtrip(_) => &all_inputs[..1],
+            Binary(_) => &all_inputs[..2],
             Ternary(..) => &all_inputs[..3],
         }
     }
@@ -48,13 +48,13 @@ impl OpKind {
 
 const OPS: &[(&str, OpKind)] = &[
     // Unary (`F -> F`) ops.
-    ("Neg", Unary(Rust('-'), Cxx("changeSign"))),
+    ("Neg", Unary('-')),
     // Binary (`(F, F) -> F`) ops.
-    ("Add", Binary(Rust('+'), Cxx("add"))),
-    ("Sub", Binary(Rust('-'), Cxx("subtract"))),
-    ("Mul", Binary(Rust('*'), Cxx("multiply"))),
-    ("Div", Binary(Rust('/'), Cxx("divide"))),
-    ("Rem", Binary(Rust('%'), Cxx("mod"))),
+    ("Add", Binary('+')),
+    ("Sub", Binary('-')),
+    ("Mul", Binary('*')),
+    ("Div", Binary('/')),
+    ("Rem", Binary('%')),
     // Ternary (`(F, F) -> F`) ops.
     ("MulAdd", Ternary(Rust("mul_add"), Cxx("fusedMultiplyAdd"))),
     // Roundtrip (`F -> T -> F`) ops.
@@ -141,8 +141,8 @@ impl<HF> FuzzOp<HF>
 " + &all_ops_map_concat(|_tag, name, kind| {
         let inputs = kind.inputs(&["a", "b", "c"]);
         let expr = match kind {
-            Unary(Rust(op), _) => format!("{op}{}", inputs[0]),
-            Binary(Rust(op), _) => format!("{} {op} {}", inputs[0], inputs[1]),
+            Unary(op) => format!("{op}{}", inputs[0]),
+            Binary(op) => format!("{} {op} {}", inputs[0], inputs[1]),
             Ternary(Rust(method), _) => {
                 format!("{}.{method}({}, {})", inputs[0], inputs[1], inputs[2])
             }
@@ -169,8 +169,8 @@ impl<RustcApFloat: rustc_apfloat::Float> FuzzOp<RustcApFloat> {
 " + &all_ops_map_concat(|_tag, name, kind| {
         let inputs = kind.inputs(&["a", "b", "c"]);
         let expr = match kind {
-            Unary(Rust(op), _) => format!("{op}{}", inputs[0]),
-            Binary(Rust(op), _) => format!("({} {op} {}).value", inputs[0], inputs[1]),
+            Unary(op) => format!("{op}{}", inputs[0]),
+            Binary(op) => format!("({} {op} {}).value", inputs[0], inputs[1]),
             Ternary(Rust(method), _) => {
                 format!("{}.{method}({}).value", inputs[0], inputs[1..].join(", "))
             }
@@ -226,20 +226,29 @@ struct FuzzOp {
     F a, b, c;
 
     F eval() const {
+
+        // HACK(eddyb) 'scratch' variables used by expressions below.
+        APFloat r(0.0);
+        APSInt i;
+        bool isExact;
+
         switch(tag) {
             "
         + &all_ops_map_concat(|_tag, name, kind| {
             let inputs = kind.inputs(&["a.to_apf()", "b.to_apf()", "c.to_apf()"]);
-            let (this, args) = inputs.split_first().unwrap();
-            let args = args.join(", ");
-            let stmt = match kind {
-                // HACK(eddyb) `mod` doesn't take a rounding mode.
-                Unary(_, Cxx(method)) | Binary(_, Cxx(method @ "mod")) => {
-                    format!("r.{method}({args})")
-                }
+            let expr = match kind {
+                // HACK(eddyb) `APFloat` doesn't overload `operator%`, so we have
+                // to go through the `mod` method instead.
+                Binary('%') => format!("((r = {}), r.mod({}), r)", inputs[0], inputs[1]),
 
-                Binary(_, Cxx(method)) | Ternary(_, Cxx(method)) => {
-                    format!("r.{method}({args}, APFloat::rmNearestTiesToEven)")
+                Unary(op) => format!("{op}{}", inputs[0]),
+                Binary(op) => format!("{} {op} {}", inputs[0], inputs[1]),
+
+                Ternary(_, Cxx(method)) => {
+                    format!(
+                        "((r = {}), r.{method}({}, {}, APFloat::rmNearestTiesToEven), r)",
+                        inputs[0], inputs[1], inputs[2]
+                    )
                 }
 
                 Roundtrip(ty @ (Type::SInt(_) | Type::UInt(_))) => {
@@ -248,21 +257,18 @@ struct FuzzOp {
                         Type::UInt(w) => (w, false),
                     };
                     format!(
-                        "
-                APSInt i({w}, !{signed});
-                bool isExact;
-                r.convertToInteger(i, APFloat::rmTowardZero, &isExact);
-                r.convertFromAPInt(i, {signed}, APFloat::rmNearestTiesToEven)"
+                        "((r = {}),
+                        (i = APSInt({w}, !{signed})),
+                        r.convertToInteger(i, APFloat::rmTowardZero, &isExact),
+                        r.convertFromAPInt(i, {signed}, APFloat::rmNearestTiesToEven),
+                        r)",
+                        inputs[0]
                     )
                 }
             };
             format!(
                 "
-            case {name}: {{
-                APFloat r = {this};
-                {stmt};
-                return F::from_apf(r);
-            }}",
+            case {name}: return F::from_apf({expr});"
             )
         })
         + "
@@ -309,8 +315,10 @@ struct __attribute__((packed)) {name} {{
     }}
 
     APFloat to_apf() const {{
-        std::array<APInt::WordType, ({w} + APInt::APINT_BITS_PER_WORD - 1) / APInt::APINT_BITS_PER_WORD>
-            words;
+        std::array<
+            APInt::WordType,
+            ({w} + APInt::APINT_BITS_PER_WORD - 1) / APInt::APINT_BITS_PER_WORD
+        > words;
         for(int i = 0; i < {w}; i += APInt::APINT_BITS_PER_WORD)
             words[i / APInt::APINT_BITS_PER_WORD] = bits >> i;
         return APFloat({cxx_apf_semantics}, APInt({w}, words));
