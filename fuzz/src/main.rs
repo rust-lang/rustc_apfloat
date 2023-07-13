@@ -54,6 +54,10 @@ trait FloatRepr: Copy + Default + Eq + fmt::Display {
 
     const NAME: &'static str;
 
+    // HACK(eddyb) this has to be overwritable because we have more than one
+    // format with the same `BIT_WIDTH`, so it's not unambiguous on its own.
+    const REPR_TAG: u8 = Self::BIT_WIDTH as u8;
+
     // FIXME(eddyb) these should ideally be using `[u8; Self::BYTE_LEN]`.
     fn from_le_bytes(bytes: &[u8]) -> Self;
     fn write_as_le_bytes_into(self, out_bytes: &mut Vec<u8>);
@@ -70,17 +74,24 @@ trait FloatRepr: Copy + Default + Eq + fmt::Display {
 macro_rules! float_reprs {
     ($($name:ident($repr:ty) {
         type RustcApFloat = $rs_apf_ty:ty;
+        $(const REPR_TAG = $repr_tag:expr;)?
         extern fn = $cxx_apf_eval_fuzz_op:ident;
         $(type HardFloat = $hard_float_ty:ty;)?
     })+) => {
         // HACK(eddyb) helper macro used to actually handle all types uniformly.
-        macro_rules! dispatch_all_reprs {
-            ($ty_var:ident => $e:expr) => {{
-                $({
-                    type $ty_var = $name;
-                    $e
-                })+
-            }}
+        macro_rules! dispatch_any_float_repr_by_repr_tag {
+            (match $repr_tag_value:ident { for<$ty_var:ident: FloatRepr> => $e:expr }) => {
+                // NOTE(eddyb) this doubles as an overlap check: `REPR_TAG`
+                // values across *all* `FloatRepr` `impl` *must* be unique.
+                #[deny(unreachable_patterns)]
+                match $repr_tag_value {
+                    $($name::REPR_TAG => {
+                        type $ty_var = $name;
+                        $e;
+                    })+
+                    _ => {}
+                }
+            }
         }
 
         $(
@@ -95,6 +106,8 @@ macro_rules! float_reprs {
                 type RustcApFloat = $rs_apf_ty;
 
                 const NAME: &'static str = stringify!($name);
+
+                $(const REPR_TAG: u8 = $repr_tag;)?
 
                 fn from_le_bytes(bytes: &[u8]) -> Self {
                     // HACK(eddyb) this allows using e.g. `u128` to hold 80 bits.
@@ -179,6 +192,13 @@ float_reprs! {
     Ieee128(u128) {
         type RustcApFloat = rustc_apfloat::ieee::Quad;
         extern fn = cxx_apf_fuzz_eval_op_ieee128;
+    }
+
+    // Non-standard IEEE-like formats.
+    BrainF16(u16) {
+        type RustcApFloat = rustc_apfloat::ieee::BFloat;
+        const REPR_TAG = 16 + 1;
+        extern fn = cxx_apf_fuzz_eval_op_brainf16;
     }
     X87_F80(u128) {
         type RustcApFloat = rustc_apfloat::ieee::X87DoubleExtended;
@@ -380,15 +400,16 @@ fn main() {
 
                     data.split_first()
                         .ok_or("empty file")
-                        .and_then(|(&bit_width, data)| {
-                            dispatch_all_reprs!(F => if bit_width as usize == F::BIT_WIDTH {
-                                FuzzOp::<F>::try_decode(data)
-                                    .ok()
-                                    .ok_or(std::any::type_name::<FuzzOp<F>>())?
-                                    .print_op_and_eval_outputs(&cli_args);
-                                return Ok(());
+                        .and_then(|(&repr_tag, data)| {
+                            dispatch_any_float_repr_by_repr_tag!(match repr_tag {
+                                for<F: FloatRepr> => return Ok(
+                                    FuzzOp::<F>::try_decode(data)
+                                        .ok()
+                                        .ok_or(std::any::type_name::<FuzzOp<F>>())?
+                                        .print_op_and_eval_outputs(&cli_args)
+                                )
                             });
-                            Err("first byte not valid bit width")
+                            Err("first byte not valid `FloatRepr::REPR_TAG`")
                         })
                         .unwrap_or_else(|e| println!("  invalid data ({e})"));
                 }
@@ -399,10 +420,11 @@ fn main() {
 
     #[cfg_attr(not(fuzzing), allow(unused))]
     let fuzz_one_op = |data: &[u8]| {
-        data.split_first().and_then(|(&bit_width, data)| {
-            dispatch_all_reprs!(F => if bit_width as usize == F::BIT_WIDTH {
-                FuzzOp::<F>::try_decode(data).ok()?.eval(&cli_args).assert_all_match();
-                return Some(());
+        data.split_first().and_then(|(&repr_tag, data)| {
+            dispatch_any_float_repr_by_repr_tag!(match repr_tag {
+                for<F: FloatRepr> => return Some(
+                    FuzzOp::<F>::try_decode(data).ok()?.eval(&cli_args).assert_all_match()
+                )
             });
             None
         });
