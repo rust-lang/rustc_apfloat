@@ -641,6 +641,56 @@ impl<S: Semantics> fmt::Debug for IeeeFloat<S> {
     }
 }
 
+// HACK(eddyb) this logic is duplicated throughout the original C++ code,
+// but it's a bit too long to keep repeating in the Rust port for all ops.
+// FIXME(eddyb) find a better name/organization for all of this functionality
+// (`IeeeDefaultExceptionHandling` doesn't have a counterpart in the C++ code).
+struct IeeeDefaultExceptionHandling;
+impl IeeeDefaultExceptionHandling {
+    fn result_from_nan<S: Semantics>(mut r: IeeeFloat<S>) -> StatusAnd<IeeeFloat<S>> {
+        assert!(r.is_nan());
+
+        let status = if r.is_signaling() {
+            // [IEEE Std 754-2008 6.2]:
+            // Under default exception handling, any operation signaling an invalid
+            // operation exception and for which a floating-point result is to be
+            // delivered shall deliver a quiet NaN.
+            sig::set_bit(&mut r.sig, S::QNAN_BIT);
+            // [IEEE Std 754-2008 6.2]:
+            // Signaling NaNs shall be reserved operands that, under default exception
+            // handling, signal the invalid operation exception(see 7.2) for every
+            // general-computational and signaling-computational operation except for
+            // the conversions described in 5.12.
+            Status::INVALID_OP
+        } else {
+            // [IEEE Std 754-2008 6.2]:
+            // For an operation with quiet NaN inputs, other than maximum and minimum
+            // operations, if a floating-point result is to be delivered the result
+            // shall be a quiet NaN which should be one of the input NaNs.
+            // ...
+            // Every general-computational and quiet-computational operation involving
+            // one or more input NaNs, none of them signaling, shall signal no
+            // exception, except fusedMultiplyAdd might signal the invalid operation
+            // exception(see 7.2).
+            Status::OK
+        };
+        status.and(r)
+    }
+
+    fn binop_result_from_either_nan<S: Semantics>(a: IeeeFloat<S>, b: IeeeFloat<S>) -> StatusAnd<IeeeFloat<S>> {
+        let r = match (a.category, b.category) {
+            (Category::NaN, _) => a,
+            (_, Category::NaN) => b,
+            _ => unreachable!(),
+        };
+        let mut status_and_r = Self::result_from_nan(r);
+        if b.is_signaling() {
+            status_and_r.status |= Status::INVALID_OP;
+        }
+        status_and_r
+    }
+}
+
 impl<S: Semantics> Float for IeeeFloat<S> {
     const BITS: usize = S::BITS;
     const PRECISION: usize = S::PRECISION;
@@ -741,6 +791,10 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
     fn add_r(mut self, rhs: Self, round: Round) -> StatusAnd<Self> {
         let status = match (self.category, rhs.category) {
+            (Category::NaN, _) | (_, Category::NaN) => {
+                return IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs);
+            }
+
             (Category::Infinity, Category::Infinity) => {
                 // Differently signed infinities can only be validly
                 // subtracted.
@@ -753,14 +807,13 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             }
 
             // Sign may depend on rounding mode; handled below.
-            (_, Category::Zero) | (Category::NaN, _) | (Category::Infinity, Category::Normal) => Status::OK,
+            (_, Category::Zero) | (Category::Infinity, Category::Normal) => Status::OK,
 
-            (Category::Zero, _) | (_, Category::NaN) | (_, Category::Infinity) => {
+            (Category::Zero, _) | (_, Category::Infinity) => {
                 self = rhs;
                 Status::OK
             }
 
-            // This return code means it was not a simple case.
             (Category::Normal, Category::Normal) => {
                 let loss =
                     sig::add_or_sub(&mut self.sig, &mut self.exp, &mut self.sign, &mut [rhs.sig[0]], rhs.exp, rhs.sign);
@@ -784,27 +837,33 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         status.and(self)
     }
 
+    // NOTE(eddyb) we can't rely on the `sub_r` method default implementation
+    // because NaN handling needs the original `rhs` (i.e. without negation).
+    fn sub_r(self, rhs: Self, round: Round) -> StatusAnd<Self> {
+        match (self.category, rhs.category) {
+            (Category::NaN, _) | (_, Category::NaN) => {
+                IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs)
+            }
+
+            _ => self.add_r(-rhs, round),
+        }
+    }
+
     fn mul_r(mut self, rhs: Self, round: Round) -> StatusAnd<Self> {
         self.sign ^= rhs.sign;
 
         match (self.category, rhs.category) {
-            (Category::NaN, _) => {
-                self.sign = false;
-                Status::OK.and(self)
-            }
+            (Category::NaN, _) | (_, Category::NaN) => {
+                self.sign ^= rhs.sign; // restore the original sign
 
-            (_, Category::NaN) => {
-                self.sign = false;
-                self.category = Category::NaN;
-                self.sig = rhs.sig;
-                Status::OK.and(self)
+                IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs)
             }
 
             (Category::Zero, Category::Infinity) | (Category::Infinity, Category::Zero) => {
                 Status::INVALID_OP.and(Self::NAN)
             }
 
-            (_, Category::Infinity) | (Category::Infinity, _) => {
+            (Category::Infinity, _) | (_, Category::Infinity) => {
                 self.category = Category::Infinity;
                 Status::OK.and(self)
             }
@@ -948,30 +1007,24 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         self.sign ^= rhs.sign;
 
         match (self.category, rhs.category) {
-            (Category::NaN, _) => {
-                self.sign = false;
-                Status::OK.and(self)
-            }
+            (Category::NaN, _) | (_, Category::NaN) => {
+                self.sign ^= rhs.sign; // restore the original sign
 
-            (_, Category::NaN) => {
-                self.category = Category::NaN;
-                self.sig = rhs.sig;
-                self.sign = false;
-                Status::OK.and(self)
+                IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs)
             }
 
             (Category::Infinity, Category::Infinity) | (Category::Zero, Category::Zero) => {
                 Status::INVALID_OP.and(Self::NAN)
             }
 
-            (Category::Infinity, _) | (Category::Zero, _) => Status::OK.and(self),
+            (Category::Infinity | Category::Zero, _) => Status::OK.and(self),
 
-            (Category::Normal, Category::Infinity) => {
+            (_, Category::Infinity) => {
                 self.category = Category::Zero;
                 Status::OK.and(self)
             }
 
-            (Category::Normal, Category::Zero) => {
+            (_, Category::Zero) => {
                 self.category = Category::Infinity;
                 Status::DIV_BY_ZERO.and(self)
             }
@@ -990,21 +1043,119 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         }
     }
 
-    fn c_fmod(mut self, rhs: Self) -> StatusAnd<Self> {
+    fn ieee_rem(self, rhs: Self) -> StatusAnd<Self> {
         match (self.category, rhs.category) {
-            (Category::NaN, _)
-            | (Category::Zero, Category::Infinity)
-            | (Category::Zero, Category::Normal)
-            | (Category::Normal, Category::Infinity) => Status::OK.and(self),
-
-            (_, Category::NaN) => {
-                self.sign = false;
-                self.category = Category::NaN;
-                self.sig = rhs.sig;
-                Status::OK.and(self)
+            (Category::NaN, _) | (_, Category::NaN) => {
+                IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs)
             }
 
             (Category::Infinity, _) | (_, Category::Zero) => Status::INVALID_OP.and(Self::NAN),
+
+            (Category::Zero, _) | (_, Category::Infinity) => Status::OK.and(self),
+
+            (Category::Normal, Category::Normal) => {
+                let mut status;
+
+                let mut x = self;
+                let mut p = rhs;
+
+                // Make sure the current value is less than twice the denom. If the addition
+                // did not succeed (an overflow has happened), which means that the finite
+                // value we currently posses must be less than twice the denom (as we are
+                // using the same semantics).
+                let p2 = unpack!(status=, p + p);
+                if status == Status::OK {
+                    x = unpack!(status=, x.c_fmod(p2));
+                    assert_eq!(status, Status::OK);
+                }
+
+                // Lets work with absolute numbers.
+                p = p.abs();
+                x = x.abs();
+
+                //
+                // To calculate the remainder we use the following scheme.
+                //
+                // The remainder is defained as follows:
+                //
+                // remainder = numer - rquot * denom = x - r * p
+                //
+                // Where r is the result of: x/p, rounded toward the nearest integral value
+                // (with halfway cases rounded toward the even number).
+                //
+                // Currently, (after x mod 2p):
+                // r is the number of 2p's present inside x, which is inherently, an even
+                // number of p's.
+                //
+                // We may split the remaining calculation into 4 options:
+                // - if x < 0.5p then we round to the nearest number with is 0, and are done.
+                // - if x == 0.5p then we round to the nearest even number which is 0, and we
+                //   are done as well.
+                // - if 0.5p < x < p then we round to nearest number which is 1, and we have
+                //   to subtract 1p at least once.
+                // - if x >= p then we must subtract p at least once, as x must be a
+                //   remainder.
+                //
+                // By now, we were done, or we added 1 to r, which in turn, now an odd number.
+                //
+                // We can now split the remaining calculation to the following 3 options:
+                // - if x < 0.5p then we round to the nearest number with is 0, and are done.
+                // - if x == 0.5p then we round to the nearest even number. As r is odd, we
+                //   must round up to the next even number. so we must subtract p once more.
+                // - if x > 0.5p (and inherently x < p) then we must round r up to the next
+                //   integral, and subtract p once more.
+                //
+
+                // Return `x * 2` at no loss of precision (i.e. no overflow).
+                //
+                // HACK(eddyb) this may seem a bit sketchy because it can return
+                // values that `normalize` would've replaced with `overflow_result`
+                // (e.g. overflowing to infinity), but the result is only used for
+                // comparisons, where both sides of such comparison can be seen
+                // as transiently having a larger *effective* exponent range.
+                let lossless_2x = |mut x: Self| {
+                    x.exp += 1;
+
+                    if x.exp >= Self::MAX_EXP {
+                        // HACK(eddyb) skip lossy `normalize` (see above).
+                    } else {
+                        let status;
+                        x = unpack!(status=, x.normalize(Round::NearestTiesToEven, Loss::ExactlyZero));
+                        assert_eq!(status, Status::OK);
+                    }
+
+                    x
+                };
+
+                if lossless_2x(x) > p {
+                    x = unpack!(status=, x - p);
+                    assert_eq!(status, Status::OK);
+
+                    if lossless_2x(x) >= p {
+                        x = unpack!(status=, x - p);
+                        assert_eq!(status, Status::OK);
+                    }
+                }
+
+                if x.is_zero() {
+                    Status::OK.and(x.copy_sign(self)) // IEEE754 requires this
+                } else {
+                    x.sign ^= self.sign;
+                    Status::OK.and(x)
+                }
+            }
+        }
+    }
+
+    fn c_fmod(mut self, rhs: Self) -> StatusAnd<Self> {
+        match (self.category, rhs.category) {
+            (Category::NaN, _) | (_, Category::NaN) => {
+                IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs)
+            }
+
+            (Category::Infinity, _) | (_, Category::Zero) => Status::INVALID_OP.and(Self::NAN),
+
+            (Category::Zero, _) | (_, Category::Infinity) => Status::OK.and(self),
 
             (Category::Normal, Category::Normal) => {
                 let orig_sign = self.sign;
@@ -1032,36 +1183,56 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     }
 
     fn round_to_integral(self, round: Round) -> StatusAnd<Self> {
-        // If the exponent is large enough, we know that this value is already
-        // integral, and the arithmetic below would potentially cause it to saturate
-        // to +/-Inf. Bail out early instead.
-        if self.is_finite_non_zero() && self.exp + 1 >= S::PRECISION as ExpInt {
-            return Status::OK.and(self);
+        match self.category {
+            Category::NaN => IeeeDefaultExceptionHandling::result_from_nan(self),
+
+            // [IEEE Std 754-2008 6.1]:
+            // The behavior of infinity in floating-point arithmetic is derived from the
+            // limiting cases of real arithmetic with operands of arbitrarily
+            // large magnitude, when such a limit exists.
+            // ...
+            // Operations on infinite operands are usually exact and therefore signal no
+            // exceptions ...
+            Category::Infinity => Status::OK.and(self),
+
+            // [IEEE Std 754-2008 6.3]:
+            // ... the sign of the result of conversions, the quantize operation, the
+            // roundToIntegral operations, and the roundToIntegralExact(see 5.3.1) is
+            // the sign of the first or only operand.
+            Category::Zero => Status::OK.and(self),
+
+            Category::Normal => {
+                // If the exponent is large enough, we know that this value is already
+                // integral, and the arithmetic below would potentially cause it to saturate
+                // to +/-Inf. Bail out early instead.
+                if self.exp + 1 >= S::PRECISION as ExpInt {
+                    return Status::OK.and(self);
+                }
+
+                // The algorithm here is quite simple: we add 2^(p-1), where p is the
+                // precision of our format, and then subtract it back off again. The choice
+                // of rounding modes for the addition/subtraction determines the rounding mode
+                // for our integral rounding as well.
+                // NOTE: When the input value is negative, we do subtraction followed by
+                // addition instead.
+                assert!(S::PRECISION <= 128);
+                let mut status;
+                let magic_const = unpack!(status=, Self::from_u128(1 << (S::PRECISION - 1)));
+                assert_eq!(status, Status::OK);
+                let magic_const = magic_const.copy_sign(self);
+
+                let mut r = self;
+                r = unpack!(status=, r.add_r(magic_const, round));
+
+                // Current value and 'MagicConstant' are both integers, so the result of the
+                // subtraction is always exact according to Sterbenz' lemma.
+                r = r.sub_r(magic_const, round).value;
+
+                // Restore the input sign to handle the case of zero result
+                // correctly.
+                status.and(r.copy_sign(self))
+            }
         }
-
-        // The algorithm here is quite simple: we add 2^(p-1), where p is the
-        // precision of our format, and then subtract it back off again. The choice
-        // of rounding modes for the addition/subtraction determines the rounding mode
-        // for our integral rounding as well.
-        // NOTE: When the input value is negative, we do subtraction followed by
-        // addition instead.
-        assert!(S::PRECISION <= 128);
-        let mut status;
-        let magic_const = unpack!(status=, Self::from_u128(1 << (S::PRECISION - 1)));
-        let magic_const = magic_const.copy_sign(self);
-
-        if status != Status::OK {
-            return status.and(self);
-        }
-
-        let mut r = self;
-        r = unpack!(status=, r.add_r(magic_const, round));
-        if status != Status::OK && status != Status::INEXACT {
-            return status.and(self);
-        }
-
-        // Restore the input sign to handle 0.0/-0.0 cases correctly.
-        r.sub_r(magic_const, round).map(|r| r.copy_sign(self))
     }
 
     fn next_up(mut self) -> StatusAnd<Self> {
@@ -1184,27 +1355,73 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         .normalize(round, Loss::ExactlyZero)
     }
 
-    fn from_str_r(mut s: &str, mut round: Round) -> Result<StatusAnd<Self>, ParseError> {
+    fn from_str_r(s: &str, mut round: Round) -> Result<StatusAnd<Self>, ParseError> {
         if s.is_empty() {
             return Err(ParseError("Invalid string length"));
         }
 
+        // Handle a leading minus sign.
+        let (minus, s) = s.strip_prefix("-").map(|s| (true, s)).unwrap_or((false, s));
+        let from_abs = |r: Self| if minus { -r } else { r };
+
+        // Handle a leading plus sign (mutually exclusive with minus).
+        let (explicit_plus, s) = s
+            .strip_prefix("+")
+            .filter(|_| !minus)
+            .map(|s| (true, s))
+            .unwrap_or((false, s));
+
         // Handle special cases.
-        match s {
-            "inf" | "INFINITY" | "+Inf" => return Ok(Status::OK.and(Self::INFINITY)),
-            "-inf" | "-INFINITY" | "-Inf" => return Ok(Status::OK.and(-Self::INFINITY)),
-            "nan" | "NaN" => return Ok(Status::OK.and(Self::NAN)),
-            "-nan" | "-NaN" => return Ok(Status::OK.and(-Self::NAN)),
-            _ => {}
+        let special = match s {
+            "Inf" if minus || explicit_plus => Some(Self::INFINITY),
+
+            "inf" | "INFINITY" if !explicit_plus => Some(Self::INFINITY),
+
+            _ if !explicit_plus => {
+                // If we have a 's' (or 'S') prefix, then this is a Signaling NaN.
+                let (is_signaling, s) = s.strip_prefix(['s', 'S']).map_or((false, s), |s| (true, s));
+
+                s.strip_prefix("nan").or_else(|| s.strip_prefix("NaN")).and_then(|s| {
+                    // Allow the payload to be inside parentheses.
+                    let s = s
+                        .strip_prefix("(")
+                        .and_then(|s| {
+                            // Parentheses should be balanced (and not empty).
+                            s.strip_suffix(")").filter(|s| !s.is_empty())
+                        })
+                        .unwrap_or(s);
+
+                    let payload = if s.is_empty() {
+                        // A NaN without payload.
+                        None
+                    } else {
+                        // Determine the payload number's radix.
+                        let (radix, s) = s
+                            .strip_prefix("0")
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.strip_prefix(['x', 'X']).map(|s| (16, s)).unwrap_or((8, s)))
+                            .unwrap_or((10, s));
+
+                        // Parse the payload and make the NaN.
+                        Some(u128::from_str_radix(s, radix).ok()?)
+                    };
+
+                    Some(if is_signaling {
+                        Self::snan(payload)
+                    } else {
+                        Self::qnan(payload)
+                    })
+                })
+            }
+
+            _ => None,
+        };
+        if let Some(r) = special {
+            return Ok(Status::OK.and(from_abs(r)));
         }
 
-        // Handle a leading minus sign.
-        let minus = s.starts_with("-");
-        if minus || s.starts_with("+") {
-            s = &s[1..];
-            if s.is_empty() {
-                return Err(ParseError("String has no digits"));
-            }
+        if s.is_empty() {
+            return Err(ParseError("String has no digits"));
         }
 
         // Adjust the rounding mode for the absolute value below.
@@ -1212,8 +1429,13 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             round = -round;
         }
 
-        let r = if s.starts_with("0x") || s.starts_with("0X") {
-            s = &s[2..];
+        let (is_hex, s) = s
+            .strip_prefix("0")
+            .and_then(|s| s.strip_prefix(['x', 'X']))
+            .map(|s| (true, s))
+            .unwrap_or((false, s));
+
+        let r = if is_hex {
             if s.is_empty() {
                 return Err(ParseError("Invalid string"));
             }
@@ -1222,7 +1444,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             Self::from_decimal_string(s, round)?
         };
 
-        Ok(r.map(|r| if minus { -r } else { r }))
+        Ok(r.map(from_abs))
     }
 
     fn to_bits(self) -> u128 {

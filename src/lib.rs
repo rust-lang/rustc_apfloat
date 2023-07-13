@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! https://github.com/llvm/llvm-project/commit/2b6b8cb10c870d64f7cc29d21fc27cef3c7e0056
+//! https://github.com/llvm/llvm-project/commit/b198f1f86ce09b86825dd6d80de2c72a617e27f7
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -295,42 +295,7 @@ pub trait Float:
     }
     fn div_r(self, rhs: Self, round: Round) -> StatusAnd<Self>;
     /// IEEE remainder.
-    // This is not currently correct in all cases.
-    fn ieee_rem(self, rhs: Self) -> StatusAnd<Self> {
-        let mut v = self;
-
-        let status;
-        v = unpack!(status=, v / rhs);
-        if status == Status::DIV_BY_ZERO {
-            return status.and(self);
-        }
-
-        assert!(Self::PRECISION < 128);
-
-        let status;
-        let x = unpack!(status=, v.to_i128_r(128, Round::NearestTiesToEven, &mut false));
-        if status == Status::INVALID_OP {
-            return status.and(self);
-        }
-
-        let status;
-        let mut v = unpack!(status=, Self::from_i128(x));
-        assert_eq!(status, Status::OK); // should always work
-
-        let status;
-        v = unpack!(status=, v * rhs);
-        assert_eq!(status - Status::INEXACT, Status::OK); // should not overflow or underflow
-
-        let status;
-        v = unpack!(status=, self - v);
-        assert_eq!(status - Status::INEXACT, Status::OK); // likewise
-
-        if v.is_zero() {
-            status.and(v.copy_sign(self)) // IEEE754 requires this
-        } else {
-            status.and(v)
-        }
-    }
+    fn ieee_rem(self, rhs: Self) -> StatusAnd<Self>;
     /// C fmod, or llvm frem.
     fn c_fmod(self, rhs: Self) -> StatusAnd<Self>;
     fn round_to_integral(self, round: Round) -> StatusAnd<Self>;
@@ -440,7 +405,7 @@ pub trait Float:
             other
         } else if other.is_nan() {
             self
-        } else if other.partial_cmp(&self) == Some(Ordering::Less) {
+        } else if other < self {
             other
         } else {
             self
@@ -454,7 +419,7 @@ pub trait Float:
             other
         } else if other.is_nan() {
             self
-        } else if self.partial_cmp(&other) == Some(Ordering::Less) {
+        } else if self < other {
             other
         } else {
             self
@@ -474,7 +439,7 @@ pub trait Float:
             } else {
                 other
             }
-        } else if other.partial_cmp(&self) == Some(Ordering::Less) {
+        } else if other < self {
             other
         } else {
             self
@@ -494,7 +459,7 @@ pub trait Float:
             } else {
                 self
             }
-        } else if self.partial_cmp(&other) == Some(Ordering::Less) {
+        } else if self < other {
             other
         } else {
             self

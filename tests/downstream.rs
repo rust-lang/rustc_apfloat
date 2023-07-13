@@ -46,7 +46,7 @@ fn fuzz_roundtrip_through_i128() {
 // `f32` FMA bit-patterns which used to produce the wrong output (found by fuzzing).
 pub const FUZZ_IEEE32_FMA_CASES_WITH_EXPECTED_OUTPUTS: &[((u32, u32, u32), u32)] = &[
     ((0x00001000 /* 5.74e-42 */, 0x0000001a /* 3.6e-44 */, 0xffff1a00 /* NaN */), 0xffff1a00 /* NaN */),
-    ((0x000080aa /* 4.6156e-41 */, 0xaaff0000 /* -4.52971e-13 */, 0xff9e007f /* NaN */), 0xff9e007f /* NaN */),
+    ((0x000080aa /* 4.6156e-41 */, 0xaaff0000 /* -4.52971e-13 */, 0xff9e007f /* NaN */), 0xffde007f /* NaN */),
     ((0x0000843f /* 4.7441e-41 */, 0x0084ff80 /* 1.2213942e-38 */, 0xffff8000 /* NaN */), 0xffff8000 /* NaN */),
     ((0x00009eaa /* 5.6918e-41 */, 0x201d7f1e /* 1.3340477e-19 */, 0xffff0001 /* NaN */), 0xffff0001 /* NaN */),
     ((0x020400ff /* 9.698114e-38 */, 0x7f7f2200 /* 3.3912968e+38 */, 0xffffffff /* NaN */), 0xffffffff /* NaN */),
@@ -63,22 +63,22 @@ pub const FUZZ_IEEE32_FMA_CASES_WITH_EXPECTED_OUTPUTS: &[((u32, u32, u32), u32)]
     ((0x200004aa /* 1.0843565e-19 */, 0x00202020 /* 2.95026e-39 */, 0x7fff00ff /* NaN */), 0x7fff00ff /* NaN */),
     (
         (0x20005eaa /* 1.0873343e-19 */, 0x9e9e9e3a /* -1.6794342e-20 */, 0xff9e009e /* NaN */),
-        0xff9e009e, /* NaN */
+        0xffde009e, /* NaN */
     ),
-    ((0x20007faa /* 1.0884262e-19 */, 0x9e00611e /* -6.796347e-21 */, 0x7faa0600 /* NaN */), 0x7faa0600 /* NaN */),
+    ((0x20007faa /* 1.0884262e-19 */, 0x9e00611e /* -6.796347e-21 */, 0x7faa0600 /* NaN */), 0x7fea0600 /* NaN */),
     (
         (0x20007faa /* 1.0884262e-19 */, 0xaa069e1e /* -1.1956449e-13 */, 0xffffecff /* NaN */),
         0xffffecff, /* NaN */
     ),
-    ((0x20025eaa /* 1.104275e-19 */, 0x9e01033a /* -6.82987e-21 */, 0xff9e009e /* NaN */), 0xff9e009e /* NaN */),
+    ((0x20025eaa /* 1.104275e-19 */, 0x9e01033a /* -6.82987e-21 */, 0xff9e009e /* NaN */), 0xffde009e /* NaN */),
     ((0x3314f400 /* 3.4680852e-8 */, 0x00ff7903 /* 2.3461462e-38 */, 0xffffffdb /* NaN */), 0xffffffdb /* NaN */),
     ((0x3314f400 /* 3.4680852e-8 */, 0x00ff7903 /* 2.3461462e-38 */, 0xfffffff6 /* NaN */), 0xfffffff6 /* NaN */),
-    ((0x3a218275 /* 0.0006161102 */, 0x3a3a3a3a /* 0.00071040133 */, 0x7f8a063a /* NaN */), 0x7f8a063a /* NaN */),
+    ((0x3a218275 /* 0.0006161102 */, 0x3a3a3a3a /* 0.00071040133 */, 0x7f8a063a /* NaN */), 0x7fca063a /* NaN */),
     ((0x40000001 /* 2.0000002 */, 0xfefffffe /* -1.7014116e+38 */, 0xfffe40ff /* NaN */), 0xfffe40ff /* NaN */),
     ((0x50007faa /* 8623401000 */, 0x000011fb /* 6.45e-42 */, 0xff800000 /* -inf */), 0xff800000 /* -inf */),
-    ((0x64007f8b /* 9.481495e+21 */, 0xfa9a8702 /* -4.01176e+35 */, 0xff820000 /* NaN */), 0xff820000 /* NaN */),
-    ((0x6a017faa /* 3.9138577e+25 */, 0x00000070 /* 1.57e-43 */, 0xff80db03 /* NaN */), 0xff80db03 /* NaN */),
-    ((0x6a017faa /* 3.9138577e+25 */, 0x00000070 /* 1.57e-43 */, 0xff80db23 /* NaN */), 0xff80db23 /* NaN */),
+    ((0x64007f8b /* 9.481495e+21 */, 0xfa9a8702 /* -4.01176e+35 */, 0xff820000 /* NaN */), 0xffc20000 /* NaN */),
+    ((0x6a017faa /* 3.9138577e+25 */, 0x00000070 /* 1.57e-43 */, 0xff80db03 /* NaN */), 0xffc0db03 /* NaN */),
+    ((0x6a017faa /* 3.9138577e+25 */, 0x00000070 /* 1.57e-43 */, 0xff80db23 /* NaN */), 0xffc0db23 /* NaN */),
     (
         (0x6e000000 /* 9.9035203e+27 */, 0xdf008000 /* -9259401000000000000 */, 0x7f800000 /* inf */),
         0x7f800000, /* inf */
@@ -90,7 +90,7 @@ pub const FUZZ_IEEE32_FMA_CASES_WITH_EXPECTED_OUTPUTS: &[((u32, u32, u32), u32)]
     ),
     (
         (0xdf0603ff /* -9656842000000000000 */, 0x808000ff /* -1.1755301e-38 */, 0xff9b0000 /* NaN */),
-        0xff9b0000, /* NaN */
+        0xffdb0000, /* NaN */
     ),
     (
         (
@@ -232,7 +232,7 @@ pub const FUZZ_IEEE64_FMA_CASES_WITH_EXPECTED_OUTPUTS: &[((u64, u64, u64), u64)]
             0xffd8000000000000, /* -6.741349255733685e+307 */
             0xfff0001000000000, /* NaN */
         ),
-        0xfff0001000000000, /* NaN */
+        0xfff8001000000000, /* NaN */
     ),
     (
         (
@@ -240,7 +240,7 @@ pub const FUZZ_IEEE64_FMA_CASES_WITH_EXPECTED_OUTPUTS: &[((u64, u64, u64), u64)]
             0xfbd8000000000000, /* -3.6544927542749997e+288 */
             0xfff0ff1000000000, /* NaN */
         ),
-        0xfff0ff1000000000, /* NaN */
+        0xfff8ff1000000000, /* NaN */
     ),
     (
         (
@@ -328,7 +328,7 @@ pub const FUZZ_IEEE64_FMA_CASES_WITH_EXPECTED_OUTPUTS: &[((u64, u64, u64), u64)]
             0x00bc000000004000, /* 3.987332354453194e-305 */
             0xfff0000000e20000, /* NaN */
         ),
-        0xfff0000000e20000, /* NaN */
+        0xfff8000000e20000, /* NaN */
     ),
     (
         (

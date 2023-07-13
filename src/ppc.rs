@@ -336,6 +336,10 @@ where
         Fallback::from(self).div_r(Fallback::from(rhs), round).map(Self::from)
     }
 
+    fn ieee_rem(self, rhs: Self) -> StatusAnd<Self> {
+        Fallback::from(self).ieee_rem(Fallback::from(rhs)).map(Self::from)
+    }
+
     fn c_fmod(self, rhs: Self) -> StatusAnd<Self> {
         Fallback::from(self).c_fmod(Fallback::from(rhs)).map(Self::from)
     }
@@ -396,7 +400,7 @@ where
         self.category() == Category::Normal
             && (self.0.is_denormal() || self.0.is_denormal() ||
           // (double)(Hi + Lo) == Hi defines a normal number.
-          !(self.0 + self.1).value.bitwise_eq(self.0))
+          self.0 !=  (self.0 + self.1).value)
     }
 
     fn is_signaling(self) -> bool {
