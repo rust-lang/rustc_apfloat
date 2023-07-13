@@ -280,11 +280,13 @@ struct FuzzOp {
         (32, "APFloat::IEEEsingle()"),
         (64, "APFloat::IEEEdouble()"),
         (128, "APFloat::IEEEquad()"),
+        (16, "APFloat::BFloat()"),
         (80, "APFloat::x87DoubleExtended()"),
     ]
     .into_iter()
     .map(|(w, cxx_apf_semantics)| {
         let (name_prefix, uint_width) = match w {
+            16 if cxx_apf_semantics.contains("BFloat") => ("BrainF", 16),
             80 => ("X87_F", 128),
             _ => ("IEEE", w),
         };

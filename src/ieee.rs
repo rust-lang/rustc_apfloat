@@ -165,7 +165,7 @@ impl<S> Clone for IeeeFloat<S> {
 }
 
 macro_rules! ieee_semantics {
-    ($($name:ident = $sem:ident($bits:tt : $exp_bits:tt)),*) => {
+    ($($name:ident = $sem:ident($bits:tt : $exp_bits:tt)),* $(,)?) => {
         $(pub struct $sem;)*
         $(pub type $name = IeeeFloat<$sem>;)*
         $(impl Semantics for $sem {
@@ -180,7 +180,10 @@ ieee_semantics! {
     Half = HalfS(16:5),
     Single = SingleS(32:8),
     Double = DoubleS(64:11),
-    Quad = QuadS(128:15)
+    Quad = QuadS(128:15),
+
+    // Non-standard IEEE-like semantics.
+    BFloat = BFloatS(16:8),
 }
 
 pub struct X87DoubleExtendedS;
