@@ -91,7 +91,7 @@ echo | clang++ -x c++ - -std=c++17 \
   $clang_codegen_flags \
   -I "$llvm"/include \
   -I "$OUT_DIR"/fake-config \
-  -DNDEBUG -DHAVE_UNISTD_H \
+  -DNDEBUG -DHAVE_UNISTD_H -DLLVM_ON_UNIX \
   --include="$llvm"/lib/Support/{APInt,APFloat,SmallVector,ErrorHandling}.cpp \
   --include="$OUT_DIR"/cxx_apf_fuzz.cpp \
   -c -emit-llvm -o "$OUT_DIR"/cxx_apf_fuzz.bc

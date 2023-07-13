@@ -100,13 +100,10 @@ pub trait Semantics: Sized {
         };
 
         if r.exp == Self::MIN_EXP - 1 && r.sig == [0] {
-            // Exponent, significand meaningless.
             r.category = Category::Zero;
         } else if r.exp == Self::MAX_EXP + 1 && r.sig == [0] {
-            // Exponent, significand meaningless.
             r.category = Category::Infinity;
         } else if r.exp == Self::MAX_EXP + 1 && r.sig != [0] {
-            // Sign, exponent, significand meaningless.
             r.category = Category::NaN;
         } else {
             r.category = Category::Normal;
@@ -220,16 +217,14 @@ impl Semantics for X87DoubleExtendedS {
         let integer_bit = r.sig[0] >> (Self::PRECISION - 1);
 
         if r.exp == Self::MIN_EXP - 1 && r.sig == [0] {
-            // Exponent, significand meaningless.
             r.category = Category::Zero;
         } else if r.exp == Self::MAX_EXP + 1 && r.sig == [1 << (Self::PRECISION - 1)] {
-            // Exponent, significand meaningless.
             r.category = Category::Infinity;
         } else if r.exp == Self::MAX_EXP + 1 && r.sig != [1 << (Self::PRECISION - 1)]
             || r.exp != Self::MAX_EXP + 1 && r.exp != Self::MIN_EXP - 1 && integer_bit == 0
         {
-            // Sign, exponent, significand meaningless.
             r.category = Category::NaN;
+            r.exp = Self::MAX_EXP + 1;
         } else {
             r.category = Category::Normal;
             if r.exp == Self::MIN_EXP - 1 {
@@ -1739,11 +1734,10 @@ impl<S: Semantics, T: Semantics> FloatConvert<IeeeFloat<T>> for IeeeFloat<S> {
                 sig::set_bit(&mut r.sig, T::PRECISION - 1);
             }
 
-            // gcc forces the Quiet bit on, which means (float)(double)(float_sNan)
-            // does not give you back the same bits. This is dubious, and we
-            // don't currently do it. You're really supposed to get
-            // an invalid operation signal at runtime, but nobody does that.
-            status = Status::OK;
+            // Convert of sNaN creates qNaN and raises an exception (invalid op).
+            // This also guarantees that a sNaN does not become Inf on a truncation
+            // that loses all payload bits.
+            r = unpack!(status=, IeeeDefaultExceptionHandling::result_from_nan(r));
         } else {
             *loses_info = false;
             status = Status::OK;
