@@ -1743,6 +1743,8 @@ fn copy_sign() {
 #[test]
 fn convert() {
     let mut loses_info = false;
+    let mut status;
+
     let test = "1.0".parse::<Double>().unwrap();
     let test: Single = test.convert(&mut loses_info).value;
     assert_eq!(1.0, test.to_f32());
@@ -1768,10 +1770,11 @@ fn convert() {
     assert!(!loses_info);
 
     let test = Single::snan(None);
-    let x87_snan = X87DoubleExtended::snan(None);
-    let test: X87DoubleExtended = test.convert(&mut loses_info).value;
-    assert!(test.bitwise_eq(x87_snan));
+    let test: X87DoubleExtended = unpack!(status=, test.convert(&mut loses_info));
+    // Conversion quiets the SNAN, so now 2 bits of the 64-bit significand should be set.
+    assert!(test.bitwise_eq(X87DoubleExtended::qnan(Some(0x6000000000000000))));
     assert!(!loses_info);
+    assert_eq!(status, Status::INVALID_OP);
 
     let test = Single::qnan(None);
     let x87_qnan = X87DoubleExtended::qnan(None);
@@ -1779,15 +1782,33 @@ fn convert() {
     assert!(test.bitwise_eq(x87_qnan));
     assert!(!loses_info);
 
-    let test = X87DoubleExtended::snan(None);
+    // NOTE(eddyb) these were mistakenly noops upstream, here they're already
+    // fixed (by instead converting from `Double` to `X87DoubleExtended`),
+    // see also upstream issue https://github.com/llvm/llvm-project/issues/63842.
+    let test = Double::snan(None);
     let test: X87DoubleExtended = test.convert(&mut loses_info).value;
-    assert!(test.bitwise_eq(x87_snan));
+    // Conversion quiets the SNAN, so now 2 bits of the 64-bit significand should be set.
+    assert!(test.bitwise_eq(X87DoubleExtended::qnan(Some(0x6000000000000000))));
     assert!(!loses_info);
 
-    let test = X87DoubleExtended::qnan(None);
+    let test = Double::qnan(None);
     let test: X87DoubleExtended = test.convert(&mut loses_info).value;
     assert!(test.bitwise_eq(x87_qnan));
     assert!(!loses_info);
+
+    // The payload is lost in truncation, but we retain NaN by setting the quiet bit.
+    let test = Double::snan(Some(1));
+    let test: Single = unpack!(status=, test.convert(&mut loses_info));
+    assert_eq!(0x7fc00000, test.to_bits());
+    assert!(loses_info);
+    assert_eq!(status, Status::INVALID_OP);
+
+    // The payload is lost in truncation. QNaN remains QNaN.
+    let test = Double::qnan(Some(1));
+    let test: Single = unpack!(status=, test.convert(&mut loses_info));
+    assert_eq!(0x7fc00000, test.to_bits());
+    assert!(loses_info);
+    assert_eq!(status, Status::OK);
 }
 
 #[test]
@@ -3977,4 +3998,14 @@ fn remainder() {
         assert!(unpack!(status=, f1.ieee_rem(f2)).bitwise_eq(expected));
         assert_eq!(status, Status::OK);
     }
+}
+
+#[test]
+fn x87_largest() {
+    assert!(X87DoubleExtended::largest().is_largest());
+}
+
+#[test]
+fn x87_next() {
+    assert_eq!("-1.0".parse::<X87DoubleExtended>().unwrap().next_up().value.ilogb(), -1);
 }
