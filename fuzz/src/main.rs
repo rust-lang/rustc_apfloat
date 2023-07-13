@@ -47,7 +47,10 @@ enum Commands {
 /// all types implementing this trait *must* be annotated with `#[repr(C, packed)]`,
 /// and `ops.rs` *must* also ensure exactly matching layout for the C++ counterpart.
 trait FloatRepr: Copy + Default + Eq + fmt::Display {
-    type RustcApFloat: rustc_apfloat::Float;
+    type RustcApFloat: rustc_apfloat::Float
+        + rustc_apfloat::Float
+        + rustc_apfloat::FloatConvert<rustc_apfloat::ieee::Single>
+        + rustc_apfloat::FloatConvert<rustc_apfloat::ieee::Double>;
 
     const BIT_WIDTH: usize = Self::RustcApFloat::BITS;
     const BYTE_LEN: usize = (Self::BIT_WIDTH + 7) / 8;
@@ -223,7 +226,12 @@ impl<F: FloatRepr> FuzzOpEvalOutputs<F> {
     }
 }
 
-impl<F: FloatRepr> FuzzOp<F> {
+impl<F: FloatRepr> FuzzOp<F>
+// FIXME(eddyb) such bounds shouldn't be here, but `FloatRepr` can't imply them.
+where
+    rustc_apfloat::ieee::Single: rustc_apfloat::FloatConvert<F::RustcApFloat>,
+    rustc_apfloat::ieee::Double: rustc_apfloat::FloatConvert<F::RustcApFloat>,
+{
     fn try_decode(data: &[u8]) -> Result<Self, ()> {
         let (&tag, inputs) = data.split_first().ok_or(())?;
         if inputs.len() % F::BYTE_LEN != 0 {

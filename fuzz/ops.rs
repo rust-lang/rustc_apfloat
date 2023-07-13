@@ -25,6 +25,7 @@ enum OpKind {
 enum Type {
     SInt(usize),
     UInt(usize),
+    Float(usize),
 }
 
 impl Type {
@@ -32,6 +33,7 @@ impl Type {
         match self {
             Type::SInt(w) => format!("i{w}"),
             Type::UInt(w) => format!("u{w}"),
+            Type::Float(w) => format!("f{w}"),
         }
     }
 }
@@ -60,6 +62,8 @@ const OPS: &[(&str, OpKind)] = &[
     // Roundtrip (`F -> T -> F`) ops.
     ("FToI128ToF", Roundtrip(Type::SInt(128))),
     ("FToU128ToF", Roundtrip(Type::UInt(128))),
+    ("FToSingleToF", Roundtrip(Type::Float(32))),
+    ("FToDoubleToF", Roundtrip(Type::Float(64))),
 ];
 
 fn all_ops_map_concat(f: impl Fn(usize, &'static str, &OpKind) -> String) -> String {
@@ -132,9 +136,13 @@ impl<HF> FuzzOp<HF>
     where
         HF: num_traits::Float
             + num_traits::AsPrimitive<i128>
-            + num_traits::AsPrimitive<u128>,
+            + num_traits::AsPrimitive<u128>
+            + num_traits::AsPrimitive<f32>
+            + num_traits::AsPrimitive<f64>,
         i128: num_traits::AsPrimitive<HF>,
         u128: num_traits::AsPrimitive<HF>,
+        f32: num_traits::AsPrimitive<HF>,
+        f64: num_traits::AsPrimitive<HF>,
 {
     fn eval_hard(self) -> HF {
         match self {
@@ -163,8 +171,15 @@ impl<HF> FuzzOp<HF>
     }
 }
 
-impl<RustcApFloat: rustc_apfloat::Float> FuzzOp<RustcApFloat> {
-    fn eval_rs_apf(self) -> RustcApFloat {
+impl<F> FuzzOp<F>
+    where
+        F: rustc_apfloat::Float
+           + rustc_apfloat::FloatConvert<rustc_apfloat::ieee::Single>
+           + rustc_apfloat::FloatConvert<rustc_apfloat::ieee::Double>,
+        rustc_apfloat::ieee::Single: rustc_apfloat::FloatConvert<F>,
+        rustc_apfloat::ieee::Double: rustc_apfloat::FloatConvert<F>,
+{
+    fn eval_rs_apf(self) -> F {
         match self {
 " + &all_ops_map_concat(|_tag, name, kind| {
         let inputs = kind.inputs(&["a", "b", "c"]);
@@ -178,9 +193,23 @@ impl<RustcApFloat: rustc_apfloat::Float> FuzzOp<RustcApFloat> {
                 let (w, i_or_u) = match ty {
                     Type::SInt(w) => (w, "i"),
                     Type::UInt(w) => (w, "u"),
+                    Type::Float(_) => unreachable!(),
                 };
                 format!(
-                    "RustcApFloat::from_{i_or_u}128({}.to_{i_or_u}128({w}).value).value",
+                    "F::from_{i_or_u}128({}.to_{i_or_u}128({w}).value).value",
+                    inputs[0],
+                )
+            }
+            Roundtrip(Type::Float(w)) => {
+                let rs_apf_type = match w {
+                    32 => "rustc_apfloat::ieee::Single",
+                    64 => "rustc_apfloat::ieee::Double",
+                    _ => unreachable!(),
+                };
+                format!(
+                    "rustc_apfloat::FloatConvert
+                        ::convert(rustc_apfloat::FloatConvert::<{rs_apf_type}>
+                            ::convert({}, &mut false).value, &mut false).value",
                     inputs[0],
                 )
             }
@@ -230,7 +259,7 @@ struct FuzzOp {
         // HACK(eddyb) 'scratch' variables used by expressions below.
         APFloat r(0.0);
         APSInt i;
-        bool isExact;
+        bool scratch_bool;
 
         switch(tag) {
             "
@@ -255,14 +284,29 @@ struct FuzzOp {
                     let (w, signed) = match ty {
                         Type::SInt(w) => (w, true),
                         Type::UInt(w) => (w, false),
+                        Type::Float(_) => unreachable!(),
                     };
                     format!(
                         "((r = {}),
                         (i = APSInt({w}, !{signed})),
-                        r.convertToInteger(i, APFloat::rmTowardZero, &isExact),
+                        r.convertToInteger(i, APFloat::rmTowardZero, &scratch_bool),
                         r.convertFromAPInt(i, {signed}, APFloat::rmNearestTiesToEven),
                         r)",
                         inputs[0]
+                    )
+                }
+                Roundtrip(Type::Float(w)) => {
+                    let cxx_apf_semantics = match w {
+                        32 => "APFloat::IEEEsingle()",
+                        64 => "APFloat::IEEEdouble()",
+                        _ => unreachable!(),
+                    };
+                    format!(
+                        "((r = {input}),
+                        r.convert({cxx_apf_semantics}, APFloat::rmNearestTiesToEven, &scratch_bool),
+                        r.convert({input}.getSemantics(), APFloat::rmNearestTiesToEven, &scratch_bool),
+                        r)",
+                        input = inputs[0]
                     )
                 }
             };
