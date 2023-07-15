@@ -21,10 +21,6 @@ struct Args {
     #[arg(long)]
     strict_hard_nan_sign: bool,
 
-    /// Disable erasure of sNaN vs qNaN mismatches with hardware floating-point operations
-    #[arg(long)]
-    strict_hard_qnan_vs_snan: bool,
-
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -315,10 +311,7 @@ where
             // FIXME(eddyb) figure out how much we can really validate against hardware.
             let rs_apf_bits = out.rs_apf.to_bits_u128();
             if is_nan(out_hard_bits) && is_nan(rs_apf_bits) {
-                for (strict, bit_mask) in [
-                    (cli_args.strict_hard_nan_sign, sign_bit_mask),
-                    (cli_args.strict_hard_qnan_vs_snan, qnan_bit_mask),
-                ] {
+                for (strict, bit_mask) in [(cli_args.strict_hard_nan_sign, sign_bit_mask)] {
                     if !strict {
                         out_hard_bits &= !bit_mask;
                         out_hard_bits |= rs_apf_bits & bit_mask;
