@@ -2,7 +2,7 @@
 extern crate rustc_apfloat;
 
 use core::cmp::Ordering;
-use rustc_apfloat::ieee::{Double, Half, Quad, Single, X87DoubleExtended};
+use rustc_apfloat::ieee::{BFloat, Double, Half, Quad, Single, X87DoubleExtended};
 use rustc_apfloat::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use rustc_apfloat::{Float, FloatConvert, Round, Status};
 
@@ -35,6 +35,35 @@ impl DoubleExt for Double {
         f64::from_bits(self.to_bits() as u64)
     }
 }
+
+// NOTE(eddyb) these match the C++ `convertToFloat`/`convertToDouble` methods,
+// after their generalization to allow an optional lossless conversion to their
+// expected semantics (from e.g. `IEEEhalf`/`BFloat`, for `convertToSingle`).
+// FIXME(eddyb) should the methods have e.g. `_lossless_via_convert` in their names?
+fn assert_lossless_conversion<S: FloatConvert<T>, T: Float>(src: S) -> T {
+    let mut loses_info = false;
+    let status;
+    let r = unpack!(status=, src.convert(&mut loses_info));
+    assert!(!status.intersects(Status::INEXACT) && !loses_info, "Unexpected imprecision");
+    r
+}
+
+trait ToF32LosslessViaConvertToSingle: FloatConvert<Single> {
+    fn to_f32(self) -> f32 {
+        assert_lossless_conversion(self).to_f32()
+    }
+}
+impl ToF32LosslessViaConvertToSingle for Half {}
+impl ToF32LosslessViaConvertToSingle for BFloat {}
+
+trait ToF64LosslessViaConvertToDouble: FloatConvert<Double> {
+    fn to_f64(self) -> f64 {
+        assert_lossless_conversion(self).to_f64()
+    }
+}
+impl ToF64LosslessViaConvertToDouble for Single {}
+// HACK(eddyb) take advantage of the transitivity of "are conversions lossless".
+impl<T: ToF32LosslessViaConvertToSingle + FloatConvert<Double>> ToF64LosslessViaConvertToDouble for T {}
 
 #[test]
 fn is_signaling() {
@@ -4008,4 +4037,217 @@ fn x87_largest() {
 #[test]
 fn x87_next() {
     assert_eq!("-1.0".parse::<X87DoubleExtended>().unwrap().next_up().value.ilogb(), -1);
+}
+
+// HACK(eddyb) C`{FLT,DBL}_TRUE_MIN` / C++ `std::numeric_limits<T>::denorm_min`
+// equivalents, for the two tests below, as Rust seems to lack anything like them,
+// but their bit-patterns are thankfuly trivial, with the main caveat that they
+// can't be `const` (subnormals and NaNs are banned from CTFE `{to,from}_bits`).
+fn f64_smallest_subnormal() -> f64 {
+    f64::from_bits(1)
+}
+fn f32_smallest_subnormal() -> f32 {
+    f32::from_bits(1)
+}
+
+#[test]
+fn to_f64() {
+    let d_pos_zero = Double::from_f64(0.0);
+    assert!(Double::from_f64(d_pos_zero.to_f64()).is_pos_zero());
+    let d_neg_zero = Double::from_f64(-0.0);
+    assert!(Double::from_f64(d_neg_zero.to_f64()).is_neg_zero());
+
+    let d_one = Double::from_f64(1.0);
+    assert_eq!(1.0, d_one.to_f64());
+    let d_pos_largest = Double::largest();
+    assert_eq!(f64::MAX, d_pos_largest.to_f64());
+    let d_neg_largest = -Double::largest();
+    assert_eq!(-f64::MAX, d_neg_largest.to_f64());
+    let d_pos_smallest = Double::smallest_normalized();
+    assert_eq!(f64::MIN_POSITIVE, d_pos_smallest.to_f64());
+    let d_neg_smallest = -Double::smallest_normalized();
+    assert_eq!(-f64::MIN_POSITIVE, d_neg_smallest.to_f64());
+
+    let d_smallest_denorm = Double::SMALLEST;
+    assert_eq!(f64_smallest_subnormal(), d_smallest_denorm.to_f64());
+    let d_largest_denorm = "0x0.FFFFFFFFFFFFFp-1022".parse::<Double>().unwrap();
+    assert_eq!(/*0x0.FFFFFFFFFFFFFp-1022*/ 2.225073858507201e-308, d_largest_denorm.to_f64());
+
+    let d_pos_inf = Double::INFINITY;
+    assert_eq!(f64::INFINITY, d_pos_inf.to_f64());
+    let d_neg_inf = -Double::INFINITY;
+    assert_eq!(-f64::INFINITY, d_neg_inf.to_f64());
+    let d_qnan = Double::qnan(None);
+    assert!(d_qnan.to_f64().is_nan());
+
+    let f_pos_zero = Single::from_f32(0.0);
+    assert!(Double::from_f64(f_pos_zero.to_f64()).is_pos_zero());
+    let f_neg_zero = Single::from_f32(-0.0);
+    assert!(Double::from_f64(f_neg_zero.to_f64()).is_neg_zero());
+
+    let f_one = Single::from_f32(1.0);
+    assert_eq!(1.0, f_one.to_f64());
+    let f_pos_largest = Single::largest();
+    assert_eq!(f32::MAX as f64, f_pos_largest.to_f64());
+    let f_neg_largest = -Single::largest();
+    assert_eq!(-f32::MAX as f64, f_neg_largest.to_f64());
+    let f_pos_smallest = Single::smallest_normalized();
+    assert_eq!(f32::MIN_POSITIVE as f64, f_pos_smallest.to_f64());
+    let f_neg_smallest = -Single::smallest_normalized();
+    assert_eq!(-f32::MIN_POSITIVE as f64, f_neg_smallest.to_f64());
+
+    let f_smallest_denorm = Single::SMALLEST;
+    assert_eq!(f32_smallest_subnormal() as f64, f_smallest_denorm.to_f64());
+    let f_largest_denorm = "0x0.FFFFFEp-126".parse::<Double>().unwrap();
+    assert_eq!(/*0x0.FFFFFEp-126*/ 1.1754942106924411e-38, f_largest_denorm.to_f64());
+
+    let f_pos_inf = Single::INFINITY;
+    assert_eq!(f64::INFINITY, f_pos_inf.to_f64());
+    let f_neg_inf = -Single::INFINITY;
+    assert_eq!(-f64::INFINITY, f_neg_inf.to_f64());
+    let f_qnan = Single::qnan(None);
+    assert!(f_qnan.to_f64().is_nan());
+
+    let h_pos_zero = Half::ZERO;
+    assert!(Double::from_f64(h_pos_zero.to_f64()).is_pos_zero());
+    let h_neg_zero = -Half::ZERO;
+    assert!(Double::from_f64(h_neg_zero.to_f64()).is_neg_zero());
+
+    let h_one = "1.0".parse::<Half>().unwrap();
+    assert_eq!(1.0, h_one.to_f64());
+    let h_pos_largest = Half::largest();
+    assert_eq!(65504.0, h_pos_largest.to_f64());
+    let h_neg_largest = -Half::largest();
+    assert_eq!(-65504.0, h_neg_largest.to_f64());
+    let h_pos_smallest = Half::smallest_normalized();
+    assert_eq!(/*0x1.p-14*/ 6.103515625e-05, h_pos_smallest.to_f64());
+    let h_neg_smallest = -Half::smallest_normalized();
+    assert_eq!(/*-0x1.p-14*/ -6.103515625e-05, h_neg_smallest.to_f64());
+
+    let h_smallest_denorm = Half::SMALLEST;
+    assert_eq!(/*0x1.p-24*/ 5.960464477539063e-08, h_smallest_denorm.to_f64());
+    let h_largest_denorm = "0x1.FFCp-14".parse::<Half>().unwrap();
+    assert_eq!(/*0x1.FFCp-14*/ 0.00012201070785522461, h_largest_denorm.to_f64());
+
+    let h_pos_inf = Half::INFINITY;
+    assert_eq!(f64::INFINITY, h_pos_inf.to_f64());
+    let h_neg_inf = -Half::INFINITY;
+    assert_eq!(-f64::INFINITY, h_neg_inf.to_f64());
+    let h_qnan = Half::qnan(None);
+    assert!(h_qnan.to_f64().is_nan());
+
+    let b_pos_zero = Half::ZERO;
+    assert!(Double::from_f64(b_pos_zero.to_f64()).is_pos_zero());
+    let b_neg_zero = -Half::ZERO;
+    assert!(Double::from_f64(b_neg_zero.to_f64()).is_neg_zero());
+
+    let b_one = "1.0".parse::<BFloat>().unwrap();
+    assert_eq!(1.0, b_one.to_f64());
+    let b_pos_largest = BFloat::largest();
+    assert_eq!(/*0x1.FEp127*/ 3.3895313892515355e+38, b_pos_largest.to_f64());
+    let b_neg_largest = -BFloat::largest();
+    assert_eq!(/*-0x1.FEp127*/ -3.3895313892515355e+38, b_neg_largest.to_f64());
+    let b_pos_smallest = BFloat::smallest_normalized();
+    assert_eq!(/*0x1.p-126*/ 1.1754943508222875e-38, b_pos_smallest.to_f64());
+    let b_neg_smallest = -BFloat::smallest_normalized();
+    assert_eq!(/*-0x1.p-126*/ -1.1754943508222875e-38, b_neg_smallest.to_f64());
+
+    let b_smallest_denorm = BFloat::SMALLEST;
+    assert_eq!(/*0x1.p-133*/ 9.183549615799121e-41, b_smallest_denorm.to_f64());
+    let b_largest_denorm = "0x1.FCp-127".parse::<BFloat>().unwrap();
+    assert_eq!(/*0x1.FCp-127*/ 1.1663108012064884e-38, b_largest_denorm.to_f64());
+
+    let b_pos_inf = BFloat::INFINITY;
+    assert_eq!(f64::INFINITY, b_pos_inf.to_f64());
+    let b_neg_inf = -BFloat::INFINITY;
+    assert_eq!(-f64::INFINITY, b_neg_inf.to_f64());
+    let b_qnan = BFloat::qnan(None);
+    assert!(b_qnan.to_f64().is_nan());
+}
+
+#[test]
+fn to_f32() {
+    let f_pos_zero = Single::from_f32(0.0);
+    assert!(Single::from_f32(f_pos_zero.to_f32()).is_pos_zero());
+    let f_neg_zero = Single::from_f32(-0.0);
+    assert!(Single::from_f32(f_neg_zero.to_f32()).is_neg_zero());
+
+    let f_one = Single::from_f32(1.0);
+    assert_eq!(1.0, f_one.to_f32());
+    let f_pos_largest = Single::largest();
+    assert_eq!(f32::MAX, f_pos_largest.to_f32());
+    let f_neg_largest = -Single::largest();
+    assert_eq!(-f32::MAX, f_neg_largest.to_f32());
+    let f_pos_smallest = Single::smallest_normalized();
+    assert_eq!(f32::MIN_POSITIVE, f_pos_smallest.to_f32());
+    let f_neg_smallest = -Single::smallest_normalized();
+    assert_eq!(-f32::MIN_POSITIVE, f_neg_smallest.to_f32());
+
+    let f_smallest_denorm = Single::SMALLEST;
+    assert_eq!(f32_smallest_subnormal(), f_smallest_denorm.to_f32());
+    let f_largest_denorm = "0x1.FFFFFEp-126".parse::<Single>().unwrap();
+    assert_eq!(/*0x1.FFFFFEp-126*/ 2.3509885615147286e-38, f_largest_denorm.to_f32());
+
+    let f_pos_inf = Single::INFINITY;
+    assert_eq!(f32::INFINITY, f_pos_inf.to_f32());
+    let f_neg_inf = -Single::INFINITY;
+    assert_eq!(-f32::INFINITY, f_neg_inf.to_f32());
+    let f_qnan = Single::qnan(None);
+    assert!(f_qnan.to_f32().is_nan());
+
+    let h_pos_zero = Half::ZERO;
+    assert!(Single::from_f32(h_pos_zero.to_f32()).is_pos_zero());
+    let h_neg_zero = -Half::ZERO;
+    assert!(Single::from_f32(h_neg_zero.to_f32()).is_neg_zero());
+
+    let h_one = "1.0".parse::<Half>().unwrap();
+    assert_eq!(1.0, h_one.to_f32());
+    let h_pos_largest = Half::largest();
+    assert_eq!(/*0x1.FFCp15*/ 65504.0, h_pos_largest.to_f32());
+    let h_neg_largest = -Half::largest();
+    assert_eq!(/*-0x1.FFCp15*/ -65504.0, h_neg_largest.to_f32());
+    let h_pos_smallest = Half::smallest_normalized();
+    assert_eq!(/*0x1.p-14*/ 6.103515625e-05, h_pos_smallest.to_f32());
+    let h_neg_smallest = -Half::smallest_normalized();
+    assert_eq!(/*-0x1.p-14*/ -6.103515625e-05, h_neg_smallest.to_f32());
+
+    let h_smallest_denorm = Half::SMALLEST;
+    assert_eq!(/*0x1.p-24*/ 5.960464477539063e-08, h_smallest_denorm.to_f32());
+    let h_largest_denorm = "0x1.FFCp-14".parse::<Half>().unwrap();
+    assert_eq!(/*0x1.FFCp-14*/ 0.00012201070785522461, h_largest_denorm.to_f32());
+
+    let h_pos_inf = Half::INFINITY;
+    assert_eq!(f32::INFINITY, h_pos_inf.to_f32());
+    let h_neg_inf = -Half::INFINITY;
+    assert_eq!(-f32::INFINITY, h_neg_inf.to_f32());
+    let h_qnan = Half::qnan(None);
+    assert!(h_qnan.to_f32().is_nan());
+
+    let b_pos_zero = BFloat::ZERO;
+    assert!(Single::from_f32(b_pos_zero.to_f32()).is_pos_zero());
+    let b_neg_zero = -BFloat::ZERO;
+    assert!(Single::from_f32(b_neg_zero.to_f32()).is_neg_zero());
+
+    let b_one = "1.0".parse::<BFloat>().unwrap();
+    assert_eq!(1.0, b_one.to_f32());
+    let b_pos_largest = BFloat::largest();
+    assert_eq!(/*0x1.FEp127*/ 3.3895313892515355e+38, b_pos_largest.to_f32());
+    let b_neg_largest = -BFloat::largest();
+    assert_eq!(/*-0x1.FEp127*/ -3.3895313892515355e+38, b_neg_largest.to_f32());
+    let b_pos_smallest = BFloat::smallest_normalized();
+    assert_eq!(/*0x1.p-126*/ 1.1754943508222875e-38, b_pos_smallest.to_f32());
+    let b_neg_smallest = -BFloat::smallest_normalized();
+    assert_eq!(/*-0x1.p-126*/ -1.1754943508222875e-38, b_neg_smallest.to_f32());
+
+    let b_smallest_denorm = BFloat::SMALLEST;
+    assert_eq!(/*0x1.p-133*/ 9.183549615799121e-41, b_smallest_denorm.to_f32());
+    let b_largest_denorm = "0x1.FCp-127".parse::<BFloat>().unwrap();
+    assert_eq!(/*0x1.FCp-127*/ 1.1663108012064884e-38, b_largest_denorm.to_f32());
+
+    let b_pos_inf = BFloat::INFINITY;
+    assert_eq!(f32::INFINITY, b_pos_inf.to_f32());
+    let b_neg_inf = -BFloat::INFINITY;
+    assert_eq!(-f32::INFINITY, b_neg_inf.to_f32());
+    let b_qnan = BFloat::qnan(None);
+    assert!(b_qnan.to_f32().is_nan());
 }
