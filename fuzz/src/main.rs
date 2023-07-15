@@ -21,6 +21,18 @@ struct Args {
     #[arg(long)]
     strict_hard_nan_sign: bool,
 
+    /// Disable erasure of "which NaN input propagates" mismatches with hardware floating-point operations
+    #[arg(long)]
+    strict_hard_nan_input_choice: bool,
+
+    /// Hide FMA NaN mismatches for `a * b + NaN` when `a * b` generates a new NaN
+    // HACK(eddyb) this is opt-in, not opt-out, because the APFloat behavior, of
+    // generating a new NaN (instead of propagating the existing one) is dubious,
+    // and may end up changing over time, so the only purpose this serves is to
+    // enable fuzzing against hardware without wasting time on these mismatches.
+    #[arg(long)]
+    ignore_fma_nan_generate_vs_propagate: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -309,12 +321,66 @@ where
             // Allow using CLI flags to toggle whether differences vs hardware are
             // erased (by copying e.g. signs from the `rustc_apfloat` result) or kept.
             // FIXME(eddyb) figure out how much we can really validate against hardware.
+            let mut strict_nan_bits_mask = !0;
+            if !cli_args.strict_hard_nan_sign {
+                strict_nan_bits_mask &= !sign_bit_mask;
+            };
+
             let rs_apf_bits = out.rs_apf.to_bits_u128();
             if is_nan(out_hard_bits) && is_nan(rs_apf_bits) {
-                for (strict, bit_mask) in [(cli_args.strict_hard_nan_sign, sign_bit_mask)] {
-                    if !strict {
-                        out_hard_bits &= !bit_mask;
-                        out_hard_bits |= rs_apf_bits & bit_mask;
+                out_hard_bits &= strict_nan_bits_mask;
+                out_hard_bits |= rs_apf_bits & !strict_nan_bits_mask;
+
+                // There is still a NaN payload difference, check if they both
+                // are propagated inputs (verbatim or at most "quieted" if SNaN),
+                // because in some cases with multiple NaN inputs, something
+                // (hardware or even e.g. LLVM passes or instruction selection)
+                // along the way from Rust code to final results, can end up
+                // causing a different input NaN to get propagated to the result.
+                if !cli_args.strict_hard_nan_input_choice && out_hard_bits != rs_apf_bits {
+                    let out_nan_is_propagated_input = |out_nan_bits| {
+                        assert!(is_nan(out_nan_bits));
+                        let mut found_any_matching_inputs = false;
+                        self.map(F::to_bits_u128).map(|in_bits| {
+                            // NOTE(eddyb) this `is_nan` check is important, as
+                            // `INFINITY.to_bits() | qnan_bit_mask == NAN.to_bits()`,
+                            // i.e. seeting the QNaN is more than enough to turn
+                            // a non-NaN (infinities, specifically) into a NaN.
+                            if is_nan(in_bits) {
+                                // Make sure to "quiet" (i.e. turn SNaN into QNaN)
+                                // the input first, as propagation does (in the
+                                // default exception handling mode, at least).
+                                if (in_bits | qnan_bit_mask) & strict_nan_bits_mask
+                                    == out_nan_bits & strict_nan_bits_mask
+                                {
+                                    found_any_matching_inputs = true;
+                                }
+                            }
+                        });
+                        found_any_matching_inputs
+                    };
+                    if out_nan_is_propagated_input(out_hard_bits)
+                        && out_nan_is_propagated_input(rs_apf_bits)
+                    {
+                        out_hard_bits = rs_apf_bits;
+                    }
+                }
+
+                // HACK(eddyb) last chance to hide a NaN payload difference,
+                // in this case for FMAs of the form `a * b + NaN`, when `a * b`
+                // generates a new NaN (which hardware can ignore in favor of the
+                // existing NaN, but APFloat returns the fresh new NaN instead).
+                if cli_args.ignore_fma_nan_generate_vs_propagate && out_hard_bits != rs_apf_bits {
+                    if let FuzzOp::MulAdd(a, b, c) = self.map(F::to_bits_u128) {
+                        if !is_nan(a)
+                            && !is_nan(b)
+                            && is_nan(c)
+                            && out_hard_bits & strict_nan_bits_mask
+                                == (c | qnan_bit_mask) & strict_nan_bits_mask
+                            && rs_apf_bits == F::RustcApFloat::NAN.to_bits()
+                        {
+                            out_hard_bits = rs_apf_bits;
+                        }
                     }
                 }
             }
