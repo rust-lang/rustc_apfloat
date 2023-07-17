@@ -320,25 +320,28 @@ struct FuzzOp {
     }
 };
 " + &[
-        (16, "APFloat::IEEEhalf()"),
-        (32, "APFloat::IEEEsingle()"),
-        (64, "APFloat::IEEEdouble()"),
-        (128, "APFloat::IEEEquad()"),
-        (16, "APFloat::BFloat()"),
-        (80, "APFloat::x87DoubleExtended()"),
+        (16, "IEEEhalf"),
+        (32, "IEEEsingle"),
+        (64, "IEEEdouble"),
+        (128, "IEEEquad"),
+        (16, "BFloat"),
+        (8, "Float8E5M2"),
+        (8, "Float8E4M3FN"),
+        (80, "x87DoubleExtended"),
     ]
     .into_iter()
-    .map(|(w, cxx_apf_semantics)| {
-        let (name_prefix, uint_width) = match w {
-            16 if cxx_apf_semantics.contains("BFloat") => ("BrainF", 16),
-            80 => ("X87_F", 128),
-            _ => ("IEEE", w),
+    .map(|(w, cxx_apf_semantics): (usize, _)| {
+        let uint_width = w.next_power_of_two();
+        let name = match (w, cxx_apf_semantics) {
+            (16, "BFloat") => "BrainF16".into(),
+            (8, s) if s.starts_with("Float8") => s.replace("Float8", "F8"),
+            (80, "x87DoubleExtended") => "X87_F80".into(),
+            _ => {
+                assert!(cxx_apf_semantics.starts_with("IEEE"));
+                format!("IEEE{w}")
+            }
         };
-        let name = format!("{name_prefix}{w}");
-        let exported_symbol = format!(
-            "cxx_apf_fuzz_eval_op_{}{w}",
-            name_prefix.to_ascii_lowercase()
-        );
+        let exported_symbol = format!("cxx_apf_fuzz_eval_op_{}", name.to_ascii_lowercase());
         exported_symbols.push(exported_symbol.clone());
         let uint = format!("uint{uint_width}_t");
         format!(
@@ -367,7 +370,7 @@ struct __attribute__((packed)) {name} {{
         > words;
         for(int i = 0; i < {w}; i += APInt::APINT_BITS_PER_WORD)
             words[i / APInt::APINT_BITS_PER_WORD] = bits >> i;
-        return APFloat({cxx_apf_semantics}, APInt({w}, words));
+        return APFloat(APFloat::{cxx_apf_semantics}(), APInt({w}, words));
     }}
 }};
 extern "C" {{

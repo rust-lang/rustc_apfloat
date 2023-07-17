@@ -206,6 +206,16 @@ float_reprs! {
     }
 
     // Non-standard IEEE-like formats.
+    F8E5M2(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E5M2;
+        const REPR_TAG = 8 + 0;
+        extern fn = cxx_apf_fuzz_eval_op_f8e5m2;
+    }
+    F8E4M3FN(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E4M3FN;
+        const REPR_TAG = 8 + 1;
+        extern fn = cxx_apf_fuzz_eval_op_f8e4m3fn;
+    }
     BrainF16(u16) {
         type RustcApFloat = rustc_apfloat::ieee::BFloat;
         const REPR_TAG = 16 + 1;

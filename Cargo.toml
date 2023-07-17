@@ -2,7 +2,7 @@
 members = ["fuzz"]
 
 [workspace.package]
-version = "0.0.7+llvm-f45d5e71d3e1"
+version = "0.0.8+llvm-462a31f5a5ab"
 edition = "2021"
 license = "Apache-2.0 WITH LLVM-exception"
 

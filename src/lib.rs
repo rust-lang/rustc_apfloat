@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! https://github.com/llvm/llvm-project/commit/f45d5e71d3e1ef9d565815850681719418a99d19
+//! https://github.com/llvm/llvm-project/commit/462a31f5a5abb905869ea93cc49b096079b11aa4
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -525,11 +525,23 @@ pub trait Float:
     fn is_neg_zero(self) -> bool {
         self.is_zero() && self.is_negative()
     }
+    fn is_pos_infinity(self) -> bool {
+        self.is_infinite() && !self.is_negative()
+    }
+    fn is_neg_infinity(self) -> bool {
+        self.is_infinite() && self.is_negative()
+    }
 
     /// Returns true if and only if the number has the smallest possible non-zero
     /// magnitude in the current semantics.
     fn is_smallest(self) -> bool {
         Self::SMALLEST.copy_sign(self).bitwise_eq(self)
+    }
+
+    /// Returns true if this is the smallest (by magnitude) normalized finite
+    /// number in the given semantics.
+    fn is_smallest_normalized(self) -> bool {
+        Self::smallest_normalized().copy_sign(self).bitwise_eq(self)
     }
 
     /// Returns true if and only if the number has the largest possible finite
