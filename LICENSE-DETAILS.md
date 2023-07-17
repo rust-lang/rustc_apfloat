@@ -1,6 +1,6 @@
 # Detailed Licensing Information
 
-This crate started as a port of LLVM's APFloat and APInt code (revision [`f3598e8fca83ccfb11f58ec7957c229e349765e3`](https://github.com/llvm/llvm-project/commit/f3598e8fca83ccfb11f58ec7957c229e349765e3)).
+This crate started as a port of LLVM's APFloat and (parts of) APInt code (revision [`f3598e8fca83ccfb11f58ec7957c229e349765e3`](https://github.com/llvm/llvm-project/commit/f3598e8fca83ccfb11f58ec7957c229e349765e3)).
 At that time, LLVM was licensed under the [University of Illinois/NCSA Open Source License](https://spdx.org/licenses/NCSA.html).
 LLVM has since worked to [relicense](https://foundation.llvm.org/docs/relicensing/) their project under the [Apache 2](https://spdx.org/licenses/Apache-2.0.html) with [LLVM Exception](https://spdx.org/licenses/LLVM-exception.html) license.
 
