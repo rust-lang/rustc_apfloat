@@ -1,13 +1,15 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use rustc_apfloat::Float as _;
 use std::fmt;
+use std::io::Write;
 use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 // See `build.rs` and `ops.rs` for how `FuzzOp` is generated.
 include!(concat!(env!("OUT_DIR"), "/generated_fuzz_ops.rs"));
 
-#[derive(Parser, Debug)]
+#[derive(Clone, Parser, Debug)]
 struct Args {
     /// Disable comparison with C++ (LLVM's original) APFloat
     #[arg(long)]
@@ -37,10 +39,13 @@ struct Args {
     command: Option<Commands>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Clone, Subcommand, Debug)]
 enum Commands {
     /// Decode fuzzing in/out testcases (binary serialized `FuzzOp`s)
     Decode { files: Vec<PathBuf> },
+
+    /// Exhaustively test all possible ops and inputs for tiny (8-bit) formats
+    BruteforceTiny,
 }
 
 /// Trait implemented for types that describe a floating-point format supported
@@ -68,6 +73,10 @@ trait FloatRepr: Copy + Default + Eq + fmt::Display {
     // HACK(eddyb) this has to be overwritable because we have more than one
     // format with the same `BIT_WIDTH`, so it's not unambiguous on its own.
     const REPR_TAG: u8 = Self::BIT_WIDTH as u8;
+
+    fn short_lowercase_name() -> String {
+        Self::NAME.to_ascii_lowercase().replace("ieee", "f")
+    }
 
     // FIXME(eddyb) these should ideally be using `[u8; Self::BYTE_LEN]`.
     fn from_le_bytes(bytes: &[u8]) -> Self;
@@ -234,13 +243,11 @@ struct FuzzOpEvalOutputs<F: FloatRepr> {
 }
 
 impl<F: FloatRepr> FuzzOpEvalOutputs<F> {
-    fn assert_all_match(self) {
-        if let Some(cxx_apf) = self.cxx_apf {
-            assert!(cxx_apf == self.rs_apf);
-        }
-        if let Some(hard) = self.hard {
-            assert!(hard == self.rs_apf);
-        }
+    fn all_match(self) -> bool {
+        [self.cxx_apf, self.hard]
+            .into_iter()
+            .flatten()
+            .all(|x| x == self.rs_apf)
     }
 }
 
@@ -430,8 +437,11 @@ where
             }
         }
 
-        let short_float_type_name = F::NAME.to_ascii_lowercase().replace("ieee", "f");
-        println!("  {short_float_type_name}.{:?}", self.map(FloatPrintHelper));
+        println!(
+            "  {}.{:?}",
+            F::short_lowercase_name(),
+            self.map(FloatPrintHelper)
+        );
 
         // HACK(eddyb) this lets us show all files even if some cause panics.
         let FuzzOpEvalOutputs {
@@ -463,6 +473,143 @@ where
         cxx_apf.map(|x| print(x, "C++ / llvm::APFloat"));
         hard.map(|x| print(x, "native hardware floats"));
     }
+
+    /// [`Commands::BruteforceTiny`] implementation (for a specific choice of `F`),
+    /// returning `Err(mismatch_count)` if there were any mismatches.
+    //
+    // HACK(eddyb) this is a method here because of the bounds `eval` needs, which
+    // are thankfully on the whole `impl`, so `Self::eval` is callable.
+    fn bruteforce_tiny(cli_args: &Args) -> Result<(), NonZeroUsize> {
+        // Here "tiny" is "8-bit" - 16-bit floats could maybe also be bruteforced,
+        // but the cost increases exponentially, so less useful relative to fuzzing.
+        if F::BIT_WIDTH > 8 {
+            return Ok(());
+        }
+
+        // HACK(eddyb) avoid reporting panics while iterating.
+        std::panic::set_hook(Box::new(|_| {}));
+
+        let all_ops = (0..)
+            .map(FuzzOp::from_tag)
+            .take_while(|op| op.is_some())
+            .map(|op| op.unwrap());
+
+        let op_to_exhaustive_cases = |op: FuzzOp<()>| {
+            let mut total_bit_width = 0;
+            op.map(|()| total_bit_width += F::BIT_WIDTH);
+            (0..usize::checked_shl(1, total_bit_width as u32).unwrap()).map(move |i| -> Self {
+                let mut combined_input_bits = i;
+                let op_with_inputs = op.map(|()| {
+                    let x = combined_input_bits & ((1 << F::BIT_WIDTH) - 1);
+                    combined_input_bits >>= F::BIT_WIDTH;
+                    F::from_bits_u128(x.try_into().unwrap())
+                });
+                assert_eq!(combined_input_bits, 0);
+                op_with_inputs
+            })
+        };
+
+        let num_total_cases = all_ops
+            .clone()
+            .map(|op| op_to_exhaustive_cases(op).len())
+            .try_fold(0, usize::checked_add)
+            .unwrap();
+
+        let float_name = F::short_lowercase_name();
+        println!("Exhaustively checking all {num_total_cases} cases for {float_name}:",);
+
+        const NUM_DOTS: usize = 80;
+        let cases_per_dot = num_total_cases / NUM_DOTS;
+        let mut cases_in_this_dot = 0;
+        let mut mismatches_in_this_dot = false;
+        let mut num_mismatches = 0;
+        let mut select_mismatches = vec![];
+        let mut all_panics = vec![];
+        for op in all_ops {
+            let mut first_mismatch = None;
+            for op_with_inputs in op_to_exhaustive_cases(op) {
+                cases_in_this_dot += 1;
+                if cases_in_this_dot >= cases_per_dot {
+                    cases_in_this_dot -= cases_per_dot;
+                    if mismatches_in_this_dot {
+                        mismatches_in_this_dot = false;
+                        print!("X");
+                    } else {
+                        print!(".")
+                    }
+                    // HACK(eddyb) get around `stdout` line buffering.
+                    std::io::stdout().flush().unwrap();
+                }
+
+                // HACK(eddyb) there are still panics we need to account for,
+                // e.g. https://github.com/llvm/llvm-project/issues/63895, and
+                // even if the Rust code didn't panic, LLVM asserts would trip.
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    op_with_inputs.eval(cli_args)
+                })) {
+                    Ok(out) => {
+                        if !out.all_match() {
+                            num_mismatches += 1;
+                            mismatches_in_this_dot = true;
+                            if first_mismatch.is_none() {
+                                first_mismatch = Some(op_with_inputs);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        mismatches_in_this_dot = true;
+                        all_panics.push(op_with_inputs);
+                    }
+                }
+            }
+            select_mismatches.extend(first_mismatch);
+        }
+        println!();
+
+        // HACK(eddyb) undo what we did at the start of this function.
+        let _ = std::panic::take_hook();
+
+        if num_mismatches > 0 {
+            assert!(!select_mismatches.is_empty());
+            println!();
+            println!(
+                "!!! found {num_mismatches} ({:.1}%) mismatches for {float_name}, showing {} of them:",
+                (num_mismatches as f64) / (num_total_cases as f64) * 100.0,
+                select_mismatches.len(),
+            );
+            for mismatch in select_mismatches {
+                mismatch.print_op_and_eval_outputs(cli_args);
+            }
+            println!();
+        } else {
+            assert!(select_mismatches.is_empty());
+        }
+
+        if !all_panics.is_empty() {
+            // HACK(eddyb) there is a good chance C++ will also fail, so avoid
+            // triggering the (more fatal) C++ assertion failure.
+            let cli_args_plus_ignore_cxx = Args {
+                ignore_cxx: true,
+                ..cli_args.clone()
+            };
+
+            println!(
+                "!!! found {} panics for {float_name}, showing them (without trying C++):",
+                all_panics.len()
+            );
+            for &panicking_case in &all_panics {
+                panicking_case.print_op_and_eval_outputs(&cli_args_plus_ignore_cxx);
+            }
+            println!();
+        }
+
+        if num_mismatches == 0 && all_panics.is_empty() {
+            println!("all {num_total_cases} cases match");
+            println!();
+        }
+
+        NonZeroUsize::new(num_mismatches + all_panics.len()).map_or(Ok(()), Err)
+    }
 }
 
 fn main() {
@@ -491,6 +638,20 @@ fn main() {
                         .unwrap_or_else(|e| println!("  invalid data ({e})"));
                 }
             }
+            Commands::BruteforceTiny => {
+                let mut any_mismatches = false;
+                for repr_tag in 0..=u8::MAX {
+                    dispatch_any_float_repr_by_repr_tag!(match repr_tag {
+                        for<F: FloatRepr> => {
+                            any_mismatches |= FuzzOp::<F>::bruteforce_tiny(&cli_args).is_err();
+                        }
+                    });
+                }
+                if any_mismatches {
+                    // FIXME(eddyb) use `fn main() -> ExitStatus`.
+                    std::process::exit(1);
+                }
+            }
         }
         return;
     }
@@ -500,7 +661,7 @@ fn main() {
         data.split_first().and_then(|(&repr_tag, data)| {
             dispatch_any_float_repr_by_repr_tag!(match repr_tag {
                 for<F: FloatRepr> => return Some(
-                    FuzzOp::<F>::try_decode(data).ok()?.eval(&cli_args).assert_all_match()
+                    assert!(FuzzOp::<F>::try_decode(data).ok()?.eval(&cli_args).all_match())
                 )
             });
             None
