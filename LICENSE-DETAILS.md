@@ -70,8 +70,8 @@ As the total diff is only 6 lines of code (excluding changes to APInt unit tests
 
 The original LLVM code appears to be available as Apache 2 with LLVM Exception and so our port of this code is licensed as such.
 
-A few additional patches (code cleanups and backports of upstream LLVM changes) have been made on top of the initial port.
-The authors of these patches have also agreed to allow their code to be used under the Apache 2 with LLVM Exception license (backports from LLVM only include changes made after LLVM's licensing switch on 2019-01-19).
+A few additional patches (code cleanups and performance improvements) have been made on top of the initial port.
+The authors of these patches have also agreed to allow their code to be used under the Apache 2 with LLVM Exception license.
 
 Subsequent work on this crate has advanced the state of the port from the original commit.
 Reviewing the set of upstream LLVM changes after revision `f3598e8fca83ccfb11f58ec7957c229e349765e3` and before the relicensing on 2019-01-19 reveals 41 changes all of which LLVM has relicensing agreements with their authors.
