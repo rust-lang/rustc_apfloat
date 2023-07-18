@@ -331,6 +331,7 @@ struct FuzzOp {
         (8, "Float8E4M3FNUZ"),
         (8, "Float8E4M3B11FNUZ"),
         (16, "BFloat"),
+        (19, "FloatTF32"),
         (80, "x87DoubleExtended"),
     ]
     .into_iter()
@@ -339,6 +340,7 @@ struct FuzzOp {
         let name = match (w, cxx_apf_semantics) {
             (8, s) if s.starts_with("Float8") => s.replace("Float8", "F8"),
             (16, "BFloat") => "BrainF16".into(),
+            (19, "FloatTF32") => "NV_TensorF32".into(),
             (80, "x87DoubleExtended") => "X87_F80".into(),
             _ => {
                 assert!(cxx_apf_semantics.starts_with("IEEE"));

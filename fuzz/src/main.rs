@@ -263,6 +263,11 @@ float_reprs! {
         const REPR_TAG = 16 + 1;
         extern fn = cxx_apf_fuzz_eval_op_brainf16;
     }
+    NV_TensorF32(u32) {
+        type RustcApFloat = rustc_apfloat::ieee::FloatTF32;
+        const REPR_TAG = 32 + 1;
+        extern fn = cxx_apf_fuzz_eval_op_nv_tensorf32;
+    }
     X87_F80(u128) {
         type RustcApFloat = rustc_apfloat::ieee::X87DoubleExtended;
         extern fn = cxx_apf_fuzz_eval_op_x87_f80;
