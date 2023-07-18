@@ -329,6 +329,7 @@ struct FuzzOp {
         (8, "Float8E5M2FNUZ"),
         (8, "Float8E4M3FN"),
         (8, "Float8E4M3FNUZ"),
+        (8, "Float8E4M3B11FNUZ"),
         (16, "BFloat"),
         (80, "x87DoubleExtended"),
     ]
