@@ -19,12 +19,18 @@ pub struct IeeeFloat<S> {
     /// What kind of floating point number this is.
     //
     // HACK(eddyb) because mutating this without accounting for `exp`/`sig`
-    // can break many subtle edge cases, it should be only read through the
-    // `.category()` method, and only set during the conversion from bits.
+    // can break some subtle edge cases, it should be only read through the
+    // `.category()` method, and only set during initialization, either for
+    // one of the special value constants, or for conversion from bits.
     read_only_category_do_not_mutate: Category,
 
     /// Sign bit of the number.
-    sign: bool,
+    //
+    // HACK(eddyb) because mutating this without accounting for `category`
+    // can break some subtle edge cases, it should be only read through the
+    // `.is_negative()` method, and only set through negation (which can be
+    // more easily used through e.g. `copy_sign`/`negate_if`/`with_sign`).
+    read_only_sign_do_not_mutate: bool,
 
     marker: PhantomData<S>,
 }
@@ -83,70 +89,136 @@ pub enum NonfiniteBehavior {
     NanOnly,
 }
 
+// HACK(eddyb) extension method flipping/changing the sign based on `bool`s.
+trait NegExt: Neg<Output = Self> + Sized {
+    fn negate_if(self, negate: bool) -> Self {
+        if negate {
+            -self
+        } else {
+            self
+        }
+    }
+
+    fn with_sign(self, sign: bool) -> Self
+    where
+        Self: Float,
+    {
+        self.negate_if(self.is_negative() != sign)
+    }
+}
+impl<T: Neg<Output = Self>> NegExt for T {}
+
 /// Represents floating point arithmetic semantics.
 pub trait Semantics: Sized {
-    /// Total number of bits in the in-memory format.
+    /// Total number of bits in the interchange format.
     const BITS: usize;
 
+    /// Number of exponent bits in the interchange format.
+    const EXP_BITS: usize;
+
     /// Number of bits in the significand. This includes the integer bit.
-    const PRECISION: usize;
+    const PRECISION: usize = (Self::BITS - 1 - Self::EXP_BITS) + 1;
 
     /// How the nonfinite values Inf and NaN are represented.
     const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::IEEE754;
 
     /// The largest E such that 2^E is representable; this matches the
     /// definition of IEEE 754.
-    const MAX_EXP: ExpInt = match Self::NONFINITE_BEHAVIOR {
-        NonfiniteBehavior::IEEE754 => -Self::MIN_EXP + 1,
-        NonfiniteBehavior::NanOnly => -Self::MIN_EXP + 2,
+    const MAX_EXP: ExpInt = {
+        let ieee_inf_and_nan_replaced_with_extra_normals = match Self::NONFINITE_BEHAVIOR {
+            NonfiniteBehavior::IEEE754 => false,
+            NonfiniteBehavior::NanOnly => true,
+        };
+        Self::IEEE_MAX_EXP
+            + (Self::MIN_EXP - Self::IEEE_MIN_EXP)
+            + (ieee_inf_and_nan_replaced_with_extra_normals as ExpInt)
     };
+    const IEEE_MAX_EXP: ExpInt = -Self::IEEE_MIN_EXP + 1;
 
     /// The smallest E such that 2^E is a normalized number; this
     /// matches the definition of IEEE 754.
-    const MIN_EXP: ExpInt = -Self::MAX_EXP + 1;
+    const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP;
+    const IEEE_MIN_EXP: ExpInt = -(1 << (Self::EXP_BITS - 1)) + 2;
 
-    /// The significand bit that marks NaN as quiet.
-    const QNAN_BIT: usize = Self::PRECISION - 2;
+    /// The base significand bitpattern of NaNs, i.e. the bits that must always
+    /// be set in all NaNs, with other significand bits being either used for
+    /// payload bits (if `NAN_PAYLOAD_MASK` covers them) or always unset.
+    const NAN_SIGNIFICAND_BASE: Limb = match Self::NONFINITE_BEHAVIOR {
+        NonfiniteBehavior::IEEE754 => 0,
+        NonfiniteBehavior::NanOnly => (1 << (Self::PRECISION - 1)) - 1,
+    };
 
-    /// The significand bitpattern to mark a NaN as quiet.
-    /// NOTE: for X87DoubleExtended we need to set two bits instead of 1.
-    const QNAN_SIGNIFICAND: Limb = 1 << Self::QNAN_BIT;
+    /// The significand bitmask for the payload of a NaN (if supported),
+    /// including the "quiet bit" (telling QNaNs apart from SNaNs).
+    const NAN_PAYLOAD_MASK: Limb = match Self::NONFINITE_BEHAVIOR {
+        NonfiniteBehavior::IEEE754 => (1 << (Self::PRECISION - 1)) - 1,
+        NonfiniteBehavior::NanOnly => 0,
+    };
+
+    /// The significand bitpattern to mark a NaN as quiet (if supported).
+    ///
+    /// NOTE: for X87DoubleExtended we need to set two bits instead of one.
+    ///
+    /// NOTE: all NaNs are quiet if unsupported (see `NonfiniteBehavior::NanOnly`).
+    const QNAN_SIGNIFICAND: Limb = match Self::NONFINITE_BEHAVIOR {
+        NonfiniteBehavior::IEEE754 => 1 << (Self::PRECISION - 2),
+        NonfiniteBehavior::NanOnly => 0,
+    };
 
     fn from_bits(bits: u128) -> IeeeFloat<Self> {
         assert!(Self::BITS > Self::PRECISION);
 
         let sign = bits & (1 << (Self::BITS - 1));
-        let exponent = (bits & !sign) >> (Self::PRECISION - 1);
+        let exponent = ((bits & !sign) >> (Self::BITS - 1 - Self::EXP_BITS)) & ((1 << Self::EXP_BITS) - 1);
         let mut r = IeeeFloat {
             sig: [bits & ((1 << (Self::PRECISION - 1)) - 1)],
             // Convert the exponent from its bias representation to a signed integer.
             exp: (exponent as ExpInt) + (Self::MIN_EXP - 1),
             read_only_category_do_not_mutate: Category::Zero,
-            sign: sign != 0,
+            read_only_sign_do_not_mutate: sign != 0,
             marker: PhantomData,
         };
 
-        let category = if r.exp == Self::MIN_EXP - 1 && r.sig == [0] {
-            Category::Zero
-        } else if r.exp == Self::MAX_EXP + 1 && r.sig == [0] {
-            Category::Infinity
-        } else if r.exp == Self::MAX_EXP + 1 && r.sig != [0] {
-            Category::NaN
-        } else if r.exp == Self::MAX_EXP
-            && r.sig == [(1 << (Self::PRECISION - 1)) - 1]
-            && Self::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly
-        {
-            Category::NaN
-        } else {
-            if r.exp == Self::MIN_EXP - 1 {
-                // Denormal.
-                r.exp = Self::MIN_EXP;
+        // NOTE(eddyb) unlike the original C++ code, this doesn't check for
+        // specific exponent/significand combinations, but instead relies on
+        // being able to construct known-good special values to compare to.
+        let try_category_from_special = |mut special: IeeeFloat<Self>| {
+            special = special.copy_sign(r);
+
+            // Ignore NaN payload to avoid needing a separate NaN check.
+            let sig_mask = if special.is_nan() { !Self::NAN_PAYLOAD_MASK } else { !0 };
+
+            if special.is_negative() == r.is_negative()
+                && special.exp == r.exp
+                && special.sig[0] & sig_mask == r.sig[0] & sig_mask
+            {
+                Some(special.category())
             } else {
-                // Set integer bit.
-                sig::set_bit(&mut r.sig, Self::PRECISION - 1);
+                None
             }
-            Category::Normal
         };
+
+        // NOTE(eddyb) the order here matters, i.e. `NAN` needs to be last, as
+        // its relaxed check (see above) overlaps `INFINITY`, for IEEE NaNs.
+        let specials = [
+            IeeeFloat::<Self>::ZERO,
+            IeeeFloat::<Self>::INFINITY,
+            IeeeFloat::<Self>::NAN,
+        ];
+
+        let category = specials
+            .into_iter()
+            .find_map(try_category_from_special)
+            .unwrap_or_else(|| {
+                if r.exp == Self::MIN_EXP - 1 {
+                    // Denormal.
+                    r.exp = Self::MIN_EXP;
+                } else {
+                    // Set integer bit.
+                    sig::set_bit(&mut r.sig, Self::PRECISION - 1);
+                }
+                Category::Normal
+            });
 
         r.read_only_category_do_not_mutate = category;
 
@@ -191,7 +263,7 @@ pub trait Semantics: Sized {
         // Convert the exponent from a signed integer to its bias representation.
         let exponent = (exponent - (Self::MIN_EXP - 1)) as u128;
 
-        ((x.sign as u128) << (Self::BITS - 1)) | (exponent << (Self::PRECISION - 1)) | significand
+        ((x.is_negative() as u128) << (Self::BITS - 1)) | (exponent << (Self::PRECISION - 1)) | significand
     }
 }
 
@@ -208,8 +280,7 @@ macro_rules! ieee_semantics {
         $(pub type $name = IeeeFloat<$sem>;)*
         $(impl Semantics for $sem {
             const BITS: usize = $bits;
-            const PRECISION: usize = ($bits - 1 - $exp_bits) + 1;
-            const MIN_EXP: ExpInt = -(1 << ($exp_bits - 1)) + 2;
+            const EXP_BITS: usize = $exp_bits;
 
             $($($extra)*)?
         })*
@@ -246,13 +317,18 @@ pub struct X87DoubleExtendedS;
 pub type X87DoubleExtended = IeeeFloat<X87DoubleExtendedS>;
 impl Semantics for X87DoubleExtendedS {
     const BITS: usize = 80;
+    const EXP_BITS: usize = 15;
+
+    // HACK(eddyb) overwriting `EXP_BITS` because its default is incorrect.
+    // FIMXE(eddyb) get rid of this by allowing `Semantics` to generically have
+    // the concept of "explicitly included integer bit", which is the main way
+    // in which the 80-bit X87 format differs from standard IEEE encodings.
     const PRECISION: usize = 64;
-    const MIN_EXP: ExpInt = -(1 << (15 - 1)) + 2;
 
     /// For x87 extended precision, we want to make a NaN, not a
     /// pseudo-NaN. Maybe we should expose the ability to make
     /// pseudo-NaNs?
-    const QNAN_SIGNIFICAND: Limb = 0b11 << Self::QNAN_BIT;
+    const QNAN_SIGNIFICAND: Limb = 0b11 << (Self::PRECISION - 2);
 
     /// Integer bit is explicit in this format. Intel hardware (387 and later)
     /// does not support these bit patterns:
@@ -263,13 +339,13 @@ impl Semantics for X87DoubleExtendedS {
     /// At the moment, the first three are treated as NaNs, the last one as Normal.
     fn from_bits(bits: u128) -> IeeeFloat<Self> {
         let sign = bits & (1 << (Self::BITS - 1));
-        let exponent = (bits & !sign) >> Self::PRECISION;
+        let exponent = ((bits & !sign) >> (Self::BITS - 1 - Self::EXP_BITS)) & ((1 << Self::EXP_BITS) - 1);
         let mut r = IeeeFloat {
             sig: [bits & ((1 << Self::PRECISION) - 1)],
             // Convert the exponent from its bias representation to a signed integer.
             exp: (exponent as ExpInt) + (Self::MIN_EXP - 1),
             read_only_category_do_not_mutate: Category::Zero,
-            sign: sign != 0,
+            read_only_sign_do_not_mutate: sign != 0,
             marker: PhantomData,
         };
 
@@ -326,7 +402,7 @@ impl Semantics for X87DoubleExtendedS {
         // Convert the exponent from a signed integer to its bias representation.
         let exponent = (exponent - (Self::MIN_EXP - 1)) as u128;
 
-        ((x.sign as u128) << (Self::BITS - 1)) | (exponent << Self::PRECISION) | significand
+        ((x.is_negative() as u128) << (Self::BITS - 1)) | (exponent << Self::PRECISION) | significand
     }
 }
 
@@ -343,21 +419,25 @@ impl<S: Semantics> PartialOrd for IeeeFloat<S> {
         match (self.category(), rhs.category()) {
             (Category::NaN, _) | (_, Category::NaN) => None,
 
-            (Category::Infinity, Category::Infinity) => Some((!self.sign).cmp(&(!rhs.sign))),
+            (Category::Infinity, Category::Infinity) => Some((!self.is_negative()).cmp(&(!rhs.is_negative()))),
 
             (Category::Zero, Category::Zero) => Some(Ordering::Equal),
 
-            (Category::Infinity, _) | (Category::Normal, Category::Zero) => Some((!self.sign).cmp(&self.sign)),
+            (Category::Infinity, _) | (Category::Normal, Category::Zero) => {
+                Some((!self.is_negative()).cmp(&self.is_negative()))
+            }
 
-            (_, Category::Infinity) | (Category::Zero, Category::Normal) => Some(rhs.sign.cmp(&(!rhs.sign))),
+            (_, Category::Infinity) | (Category::Zero, Category::Normal) => {
+                Some(rhs.is_negative().cmp(&(!rhs.is_negative())))
+            }
 
             (Category::Normal, Category::Normal) => {
                 // Two normal numbers. Do they have the same sign?
-                Some((!self.sign).cmp(&(!rhs.sign)).then_with(|| {
+                Some((!self.is_negative()).cmp(&(!rhs.is_negative())).then_with(|| {
                     // Compare absolute values; invert result if negative.
                     let result = self.cmp_abs_normal(*rhs);
 
-                    if self.sign {
+                    if self.is_negative() {
                         result.reverse()
                     } else {
                         result
@@ -368,10 +448,10 @@ impl<S: Semantics> PartialOrd for IeeeFloat<S> {
     }
 }
 
-impl<S> Neg for IeeeFloat<S> {
+impl<S: Semantics> Neg for IeeeFloat<S> {
     type Output = Self;
     fn neg(mut self) -> Self {
-        self.sign = !self.sign;
+        self.read_only_sign_do_not_mutate = !self.is_negative();
         self
     }
 }
@@ -409,7 +489,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
 
         match self.category() {
             Category::Infinity => {
-                if self.sign {
+                if self.is_negative() {
                     return f.write_str("-Inf");
                 } else {
                     return f.write_str("+Inf");
@@ -419,7 +499,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
             Category::NaN => return f.write_str("NaN"),
 
             Category::Zero => {
-                if self.sign {
+                if self.is_negative() {
                     f.write_char('-')?;
                 }
 
@@ -444,7 +524,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
             Category::Normal => {}
         }
 
-        if self.sign {
+        if self.is_negative() {
             f.write_char('-')?;
         }
 
@@ -693,7 +773,7 @@ impl<S: Semantics> fmt::Debug for IeeeFloat<S> {
             "{}({:?} | {}{:?} * 2^{})",
             self,
             self.category(),
-            if self.sign { "-" } else { "+" },
+            if self.is_negative() { "-" } else { "+" },
             self.sig,
             self.exp
         )
@@ -714,7 +794,16 @@ impl IeeeDefaultExceptionHandling {
             // Under default exception handling, any operation signaling an invalid
             // operation exception and for which a floating-point result is to be
             // delivered shall deliver a quiet NaN.
-            sig::set_bit(&mut r.sig, S::QNAN_BIT);
+            let [sig] = &mut r.sig;
+            *sig |= if S::QNAN_SIGNIFICAND == X87DoubleExtendedS::QNAN_SIGNIFICAND {
+                // HACK(eddyb) remain bug-compatible with the original C++ code
+                // which doesn't appear to attempt avoiding creating pseudo-NaNs
+                // (see https://github.com/llvm/llvm-project/issues/63938).
+                S::QNAN_SIGNIFICAND & S::NAN_PAYLOAD_MASK
+            } else {
+                S::QNAN_SIGNIFICAND
+            };
+
             // [IEEE Std 754-2008 6.2]:
             // Signaling NaNs shall be reserved operands that, under default exception
             // handling, signal the invalid operation exception(see 7.2) for every
@@ -754,28 +843,24 @@ impl<S: Semantics> IeeeFloat<S> {
     // HACK(eddyb) allow `Self::qnan` to be used from `IeeeFloat::NAN`.
     // FIXME(eddyb) move back to the trait impl when that can be `const fn`.
     const fn qnan(payload: Option<u128>) -> Self {
-        let (sig, exp) = match S::NONFINITE_BEHAVIOR {
-            NonfiniteBehavior::IEEE754 => (
-                [S::QNAN_SIGNIFICAND
-                    | match payload {
-                        Some(payload) => {
-                            // Zero out the excess bits of the significand.
-                            payload & ((1 << S::QNAN_BIT) - 1)
-                        }
-                        None => 0,
-                    }],
-                S::MAX_EXP + 1,
-            ),
+        let sig = [S::NAN_SIGNIFICAND_BASE
+            | S::QNAN_SIGNIFICAND
+            | match payload {
+                // Zero out the excess bits of the significand.
+                Some(payload) => payload & S::NAN_PAYLOAD_MASK,
+                None => 0,
+            }];
 
-            // The only NaN representation is where the mantissa is all 1s, which is
-            // non-signalling.
-            NonfiniteBehavior::NanOnly => ([(1 << (S::PRECISION - 1)) - 1], S::MAX_EXP),
+        let exp = match S::NONFINITE_BEHAVIOR {
+            NonfiniteBehavior::IEEE754 => S::MAX_EXP + 1,
+            NonfiniteBehavior::NanOnly => S::MAX_EXP,
         };
+
         IeeeFloat {
             sig,
             exp,
             read_only_category_do_not_mutate: Category::NaN,
-            sign: false,
+            read_only_sign_do_not_mutate: false,
             marker: PhantomData,
         }
     }
@@ -791,7 +876,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         sig: [0],
         exp: S::MIN_EXP - 1,
         read_only_category_do_not_mutate: Category::Zero,
-        sign: false,
+        read_only_sign_do_not_mutate: false,
         marker: PhantomData,
     };
 
@@ -800,7 +885,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             sig: [0],
             exp: S::MAX_EXP + 1,
             read_only_category_do_not_mutate: Category::Infinity,
-            sign: false,
+            read_only_sign_do_not_mutate: false,
             marker: PhantomData,
         },
 
@@ -819,20 +904,16 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     fn snan(payload: Option<u128>) -> Self {
         let mut snan = Self::qnan(payload);
 
-        // The only NaN representation is where the mantissa is all 1s, which is
-        // non-signalling.
-        if S::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly {
-            return snan;
-        }
+        let [sig] = &mut snan.sig;
 
         // We always have to clear the QNaN bit to make it an SNaN.
-        sig::clear_bit(&mut snan.sig, S::QNAN_BIT);
+        *sig &= !(S::QNAN_SIGNIFICAND & S::NAN_PAYLOAD_MASK);
 
         // If there are no bits set in the payload, we have to set
         // *something* to make it a NaN instead of an infinity;
         // conventionally, this is the next bit down from the QNaN bit.
-        if snan.sig[0] & !S::QNAN_SIGNIFICAND == 0 {
-            sig::set_bit(&mut snan.sig, S::QNAN_BIT - 1);
+        if *sig & S::NAN_PAYLOAD_MASK == 0 {
+            *sig |= (S::QNAN_SIGNIFICAND & S::NAN_PAYLOAD_MASK) >> 1;
         }
 
         snan
@@ -856,7 +937,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 }],
             exp: S::MAX_EXP,
             read_only_category_do_not_mutate: Category::Normal,
-            sign: false,
+            read_only_sign_do_not_mutate: false,
             marker: PhantomData,
         }
     }
@@ -868,7 +949,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         sig: [1],
         exp: S::MIN_EXP,
         read_only_category_do_not_mutate: Category::Normal,
-        sign: false,
+        read_only_sign_do_not_mutate: false,
         marker: PhantomData,
     };
 
@@ -880,7 +961,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             sig: [1 << (S::PRECISION - 1)],
             exp: S::MIN_EXP,
             read_only_category_do_not_mutate: Category::Normal,
-            sign: false,
+            read_only_sign_do_not_mutate: false,
             marker: PhantomData,
         }
     }
@@ -894,7 +975,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             (Category::Infinity, Category::Infinity) => {
                 // Differently signed infinities can only be validly
                 // subtracted.
-                if self.sign != rhs.sign {
+                if self.is_negative() != rhs.is_negative() {
                     self = Self::NAN;
                     Status::INVALID_OP
                 } else {
@@ -911,8 +992,17 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             }
 
             (Category::Normal, Category::Normal) => {
-                let loss =
-                    sig::add_or_sub(&mut self.sig, &mut self.exp, &mut self.sign, &mut [rhs.sig[0]], rhs.exp, rhs.sign);
+                let mut sign = self.is_negative();
+                let loss = sig::add_or_sub(
+                    &mut self.sig,
+                    &mut self.exp,
+                    &mut sign,
+                    &mut [rhs.sig[0]],
+                    rhs.exp,
+                    rhs.is_negative(),
+                );
+                self = self.with_sign(sign);
+
                 let status;
                 self = unpack!(status=, self.normalize(round, loss));
 
@@ -926,8 +1016,10 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         // If two numbers add (exactly) to zero, IEEE 754 decrees it is a
         // positive zero unless rounding to minus infinity, except that
         // adding two like-signed zeroes gives that zero.
-        if self.category() == Category::Zero && (rhs.category() != Category::Zero || self.sign != rhs.sign) {
-            self.sign = round == Round::TowardNegative;
+        if self.category() == Category::Zero
+            && (rhs.category() != Category::Zero || self.is_negative() != rhs.is_negative())
+        {
+            self = self.with_sign(round == Round::TowardNegative);
         }
 
         status.and(self)
@@ -946,11 +1038,11 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     }
 
     fn mul_r(mut self, rhs: Self, round: Round) -> StatusAnd<Self> {
-        self.sign ^= rhs.sign;
+        self = self.negate_if(rhs.is_negative());
 
         match (self.category(), rhs.category()) {
             (Category::NaN, _) | (_, Category::NaN) => {
-                self.sign ^= rhs.sign; // restore the original sign
+                self = self.negate_if(rhs.is_negative()); // restore the original sign
 
                 IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs)
             }
@@ -1010,7 +1102,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         }
 
         // Post-multiplication sign, before addition.
-        self.sign ^= multiplicand.sign;
+        self = self.negate_if(multiplicand.is_negative());
 
         // Allocate space for twice as many bits as the original significand, plus one
         // extra bit for the addition to overflow into.
@@ -1049,14 +1141,17 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             // that the high bit of the significand is zero (same as wide_sig),
             // so the addition will overflow (if it does overflow at all) into the top bit.
             sig::shift_left(&mut ext_addend_sig, &mut 0, ext_precision - 1 - S::PRECISION);
+
+            let mut sign = self.is_negative();
             loss = sig::add_or_sub(
                 &mut wide_sig,
                 &mut self.exp,
-                &mut self.sign,
+                &mut sign,
                 &mut ext_addend_sig,
                 addend.exp + 1,
-                addend.sign,
+                addend.is_negative(),
             );
+            self = self.with_sign(sign);
 
             omsb = sig::omsb(&wide_sig);
         }
@@ -1086,19 +1181,22 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         // If two numbers add (exactly) to zero, IEEE 754 decrees it is a
         // positive zero unless rounding to minus infinity, except that
         // adding two like-signed zeroes gives that zero.
-        if self.category() == Category::Zero && !status.intersects(Status::UNDERFLOW) && self.sign != addend.sign {
-            self.sign = round == Round::TowardNegative;
+        if self.category() == Category::Zero
+            && !status.intersects(Status::UNDERFLOW)
+            && self.is_negative() != addend.is_negative()
+        {
+            self = self.with_sign(round == Round::TowardNegative);
         }
 
         status.and(self)
     }
 
     fn div_r(mut self, rhs: Self, round: Round) -> StatusAnd<Self> {
-        self.sign ^= rhs.sign;
+        self = self.negate_if(rhs.is_negative());
 
         match (self.category(), rhs.category()) {
             (Category::NaN, _) | (_, Category::NaN) => {
-                self.sign ^= rhs.sign; // restore the original sign
+                self = self.negate_if(rhs.is_negative()); // restore the original sign
 
                 IeeeDefaultExceptionHandling::binop_result_from_either_nan(self, rhs)
             }
@@ -1224,8 +1322,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 if x.is_zero() {
                     Status::OK.and(x.copy_sign(self)) // IEEE754 requires this
                 } else {
-                    x.sign ^= self.sign;
-                    Status::OK.and(x)
+                    Status::OK.and(x.negate_if(self.is_negative()))
                 }
             }
         }
@@ -1242,7 +1339,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             (Category::Zero, _) | (_, Category::Infinity) => Status::OK.and(self),
 
             (Category::Normal, Category::Normal) => {
-                let orig_sign = self.sign;
+                let orig = self;
 
                 while self.is_finite_non_zero()
                     && rhs.is_finite_non_zero()
@@ -1255,14 +1352,14 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                     if v.is_nan() || self.cmp_abs_normal(v) == Ordering::Less {
                         v = rhs.scalbn(exp - 1);
                     }
-                    v.sign = self.sign;
+                    v = v.copy_sign(self);
 
                     let status;
                     self = unpack!(status=, self - v);
                     assert_eq!(status, Status::OK);
                 }
                 if self.is_zero() {
-                    self.sign = orig_sign;
+                    self = self.copy_sign(orig);
                 }
                 Status::OK.and(self)
             }
@@ -1326,7 +1423,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         // Compute nextUp(x), handling each float category separately.
         match self.category() {
             Category::Infinity => {
-                if self.sign {
+                if self.is_negative() {
                     // nextUp(-inf) = -largest
                     Status::OK.and(-Self::largest())
                 } else {
@@ -1351,12 +1448,12 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             }
             Category::Normal => {
                 // nextUp(-smallest) = -0
-                if self.is_smallest() && self.sign {
+                if self.is_smallest() && self.is_negative() {
                     return Status::OK.and(-Self::ZERO);
                 }
 
                 // nextUp(largest) == INFINITY
-                if self.is_largest() && !self.sign {
+                if self.is_largest() && !self.is_negative() {
                     return Status::OK.and(Self::INFINITY);
                 }
 
@@ -1364,7 +1461,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 let sig_mask = (1 << (S::PRECISION - 1)) - 1;
 
                 // nextUp(normal) == normal + inc.
-                if self.sign {
+                if self.is_negative() {
                     // If we are negative, we need to decrement the significand.
 
                     // We only cross a binade boundary that requires adjusting the exponent
@@ -1436,7 +1533,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             sig: [input],
             exp: S::PRECISION as ExpInt - 1,
             read_only_category_do_not_mutate: Category::Normal,
-            sign: false,
+            read_only_sign_do_not_mutate: false,
             marker: PhantomData,
         }
         .normalize(round, Loss::ExactlyZero)
@@ -1449,7 +1546,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
         // Handle a leading minus sign.
         let (minus, s) = s.strip_prefix("-").map(|s| (true, s)).unwrap_or((false, s));
-        let from_abs = |r: Self| if minus { -r } else { r };
+        let from_abs = |r: Self| r.negate_if(minus);
 
         // Handle a leading plus sign (mutually exclusive with minus).
         let (explicit_plus, s) = s
@@ -1512,9 +1609,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         }
 
         // Adjust the rounding mode for the absolute value below.
-        if minus {
-            round = -round;
-        }
+        round = round.negate_if(minus);
 
         let (is_hex, s) = s
             .strip_prefix("0")
@@ -1541,7 +1636,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
     fn to_u128_r(self, width: usize, round: Round, is_exact: &mut bool) -> StatusAnd<u128> {
         // The result of trying to convert a number too large.
-        let overflow = if self.sign {
+        let overflow = if self.is_negative() {
             // Negative numbers cannot be represented as unsigned.
             0
         } else {
@@ -1558,7 +1653,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
             Category::Zero => {
                 // Negative zero can't be represented as an int.
-                *is_exact = !self.sign;
+                *is_exact = !self.is_negative();
                 Status::OK.and(0)
             }
 
@@ -1630,7 +1725,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     }
 
     fn bitwise_eq(self, rhs: Self) -> bool {
-        if self.category() != rhs.category() || self.sign != rhs.sign {
+        if self.category() != rhs.category() || self.is_negative() != rhs.is_negative() {
             return false;
         }
 
@@ -1646,7 +1741,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     }
 
     fn is_negative(self) -> bool {
-        self.sign
+        self.read_only_sign_do_not_mutate
     }
 
     fn is_denormal(self) -> bool {
@@ -1656,7 +1751,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     fn is_signaling(self) -> bool {
         // IEEE-754R 2008 6.2.1: A signaling NaN bit string should be encoded with the
         // first bit of the trailing significand being 0.
-        self.is_nan() && !sig::get_bit(&self.sig, S::QNAN_BIT)
+        self.is_nan() && self.sig[0] & S::QNAN_SIGNIFICAND != S::QNAN_SIGNIFICAND
     }
 
     fn category(self) -> Category {
@@ -1730,7 +1825,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         self.exp = self.exp.saturating_add(exp_change as ExpInt);
         self = self.normalize(round, Loss::ExactlyZero).value;
         if self.is_nan() {
-            sig::set_bit(&mut self.sig, S::QNAN_BIT);
+            self = IeeeDefaultExceptionHandling::result_from_nan(self).value;
         }
         self
     }
@@ -1740,7 +1835,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
         // Quiet signalling nans.
         if *exp == IEK_NAN {
-            sig::set_bit(&mut self.sig, S::QNAN_BIT);
+            self = IeeeDefaultExceptionHandling::result_from_nan(self).value;
             return self;
         }
 
@@ -1760,24 +1855,32 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 }
 
 impl<S: Semantics, T: Semantics> FloatConvert<IeeeFloat<T>> for IeeeFloat<S> {
-    fn convert_r(self, round: Round, loses_info: &mut bool) -> StatusAnd<IeeeFloat<T>> {
-        let mut r = IeeeFloat {
-            sig: self.sig,
-            exp: self.exp,
-            read_only_category_do_not_mutate: self.category(),
-            sign: self.sign,
-            marker: PhantomData,
-        };
+    fn convert_r(mut self, round: Round, loses_info: &mut bool) -> StatusAnd<IeeeFloat<T>> {
+        // FIXME(eddyb) move this into the return result.
+        *loses_info = false;
 
         // x86 has some unusual NaNs which cannot be represented in any other
         // format; note them here.
         fn is_x87_double_extended<S: Semantics>() -> bool {
             S::QNAN_SIGNIFICAND == X87DoubleExtendedS::QNAN_SIGNIFICAND
         }
-        let x87_special_nan = is_x87_double_extended::<S>()
+        let loses_x87_pseudo_nan = is_x87_double_extended::<S>()
             && !is_x87_double_extended::<T>()
-            && r.category() == Category::NaN
-            && (r.sig[0] & S::QNAN_SIGNIFICAND) != S::QNAN_SIGNIFICAND;
+            && self.category() == Category::NaN
+            && (self.sig[0] & S::QNAN_SIGNIFICAND) != S::QNAN_SIGNIFICAND;
+
+        // NOTE(eddyb) this is done early because the target semantics may not
+        // actually support encoding the distinction between SNaN and QNaN.
+        //
+        // Convert of sNaN creates qNaN and raises an exception (invalid op).
+        // This also guarantees that a sNaN does not become Inf on a truncation
+        // that loses all payload bits.
+        let mut status = Status::OK;
+        if self.is_nan() {
+            self = unpack!(status|=, IeeeDefaultExceptionHandling::result_from_nan(self));
+        }
+
+        let Self { mut sig, mut exp, .. } = self;
 
         // If this is a truncation of a denormal number, and the target semantics
         // has larger exponent range than the source semantics (this can happen
@@ -1787,77 +1890,67 @@ impl<S: Semantics, T: Semantics> FloatConvert<IeeeFloat<T>> for IeeeFloat<S> {
         // Also do a similar trick in case shifting denormal would produce zero
         // significand as this case isn't handled correctly by normalize.
         let mut shift = T::PRECISION as ExpInt - S::PRECISION as ExpInt;
-        if shift < 0 && r.is_finite_non_zero() {
-            let omsb = sig::omsb(&r.sig) as ExpInt;
+        if shift < 0 && self.is_finite_non_zero() {
+            let omsb = sig::omsb(&sig) as ExpInt;
             let mut exp_change = omsb - S::PRECISION as ExpInt;
-            if r.exp + exp_change < T::MIN_EXP {
-                exp_change = T::MIN_EXP - r.exp;
+            if exp + exp_change < T::MIN_EXP {
+                exp_change = T::MIN_EXP - exp;
             }
             if exp_change < shift {
                 exp_change = shift;
             }
             if exp_change < 0 {
                 shift -= exp_change;
-                r.exp += exp_change;
+                exp += exp_change;
             } else if omsb <= -shift {
                 exp_change = omsb + shift - 1; // leave at least one bit set
                 shift -= exp_change;
-                r.exp += exp_change;
+                exp += exp_change;
             }
         }
 
         // If this is a truncation, perform the shift.
         let mut loss = Loss::ExactlyZero;
-        if shift < 0
-            && (r.is_finite_non_zero()
-                || r.category() == Category::NaN
-                // FIXME(eddyb) this is effectively "has NaN payload to shift",
-                // maybe there should be an assoc `const` for "NaN payload bits"?
-                && S::NONFINITE_BEHAVIOR != NonfiniteBehavior::NanOnly)
-        {
-            loss = sig::shift_right(&mut r.sig, &mut 0, -shift as usize);
+        if shift < 0 && (self.is_finite_non_zero() || self.category() == Category::NaN && S::NAN_PAYLOAD_MASK != 0) {
+            loss = sig::shift_right(&mut sig, &mut 0, -shift as usize);
         }
 
         // If this is an extension, perform the shift.
-        if shift > 0 && (r.is_finite_non_zero() || r.category() == Category::NaN) {
-            sig::shift_left(&mut r.sig, &mut 0, shift as usize);
+        if shift > 0 && (self.is_finite_non_zero() || self.category() == Category::NaN) {
+            sig::shift_left(&mut sig, &mut 0, shift as usize);
         }
 
-        let status;
-        match (r.category(), T::NONFINITE_BEHAVIOR) {
-            (Category::Normal, _) => {
-                r = unpack!(status=, r.normalize(round, loss));
-                *loses_info = status != Status::OK;
+        let r = match self.category() {
+            Category::Normal => {
+                let r = IeeeFloat::<T> {
+                    sig,
+                    exp,
+                    read_only_category_do_not_mutate: self.category(),
+                    read_only_sign_do_not_mutate: self.is_negative(),
+                    marker: PhantomData,
+                };
+                unpack!(status|=, r.normalize(round, loss))
             }
-            (Category::NaN, NonfiniteBehavior::IEEE754) => {
-                *loses_info = loss != Loss::ExactlyZero || x87_special_nan;
+            Category::NaN => {
+                *loses_info = loss != Loss::ExactlyZero
+                    || loses_x87_pseudo_nan
+                    || S::NAN_PAYLOAD_MASK != 0 && T::NAN_PAYLOAD_MASK == 0;
 
-                // For x87 extended precision, we want to make a NaN, not a special NaN if
-                // the input wasn't special either.
-                if !x87_special_nan && is_x87_double_extended::<T>() {
-                    sig::set_bit(&mut r.sig, T::PRECISION - 1);
-                }
+                IeeeFloat::<T>::qnan(Some(sig[0])).with_sign(self.is_negative())
+            }
+            Category::Infinity => IeeeFloat::<T>::INFINITY.with_sign(self.is_negative()),
+            Category::Zero => IeeeFloat::<T>::ZERO.with_sign(self.is_negative()),
+        };
 
-                // Convert of sNaN creates qNaN and raises an exception (invalid op).
-                // This also guarantees that a sNaN does not become Inf on a truncation
-                // that loses all payload bits.
-                r = unpack!(status=, IeeeDefaultExceptionHandling::result_from_nan(r));
-            }
-            (Category::NaN, NonfiniteBehavior::NanOnly) => {
-                *loses_info = S::NONFINITE_BEHAVIOR != T::NONFINITE_BEHAVIOR;
-                status = IeeeDefaultExceptionHandling::result_from_nan(self).status;
-                r = IeeeFloat::<T>::NAN.copy_sign(r);
-            }
-            (Category::Infinity, NonfiniteBehavior::NanOnly) => {
-                *loses_info = true;
-                status = Status::INEXACT;
-                r = IeeeFloat::<T>::NAN.copy_sign(r);
-            }
-            (Category::Infinity | Category::Zero, _) => {
-                *loses_info = false;
-                status = Status::OK;
-            }
+        // NOTE(eddyb) this catches all cases of e.g. ±Inf turning into NaN,
+        // because of `T::NONFINITE_BEHAVIOR` not being `IEEE754`.
+        if matches!(self.category(), Category::Infinity | Category::Zero)
+            && (r.category() != self.category() || r.is_negative() != self.is_negative())
+        {
+            status |= Status::INEXACT;
         }
+
+        *loses_info |= (status - Status::INVALID_OP) != Status::OK;
 
         status.and(r)
     }
@@ -1905,8 +1998,8 @@ impl<S: Semantics> IeeeFloat<S> {
                 false
             }
             Round::TowardZero => false,
-            Round::TowardPositive => !self.sign,
-            Round::TowardNegative => self.sign,
+            Round::TowardPositive => !self.is_negative(),
+            Round::TowardNegative => self.is_negative(),
         }
     }
 
@@ -1927,7 +2020,7 @@ impl<S: Semantics> IeeeFloat<S> {
             // If the resulting exponent is too high, overflow according to
             // the rounding mode.
             if final_exp > S::MAX_EXP {
-                let round = if self.sign { -round } else { round };
+                let round = round.negate_if(self.is_negative());
                 return Self::overflow_result(round).map(|r| r.copy_sign(self));
             }
 
@@ -1957,12 +2050,12 @@ impl<S: Semantics> IeeeFloat<S> {
             }
         }
 
-        // NOTE(eddyb) for `NanOnly`, `INFINITY` (which isn't distinct from `NAN`)
-        // takes up the largest significand of `MAX_EXP` (which also has normals),
-        // though comparing significands has to ignore the integer bit it lacks.
+        // NOTE(eddyb) for `NonfiniteBehavior::NanOnly`, the unique `NAN` takes up
+        // the largest significand of `MAX_EXP` (which also has normals), though
+        // comparing significands needs to ignore the integer bit `NAN` lacks.
         if S::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly
-            && self.exp == Self::INFINITY.exp
-            && [self.sig[0] & ((1 << (S::PRECISION - 1)) - 1)] == Self::INFINITY.sig
+            && self.exp == Self::NAN.exp
+            && [self.sig[0] & S::NAN_SIGNIFICAND_BASE] == Self::NAN.sig
         {
             return Self::overflow_result(round).map(|r| r.copy_sign(self));
         }
@@ -2005,12 +2098,12 @@ impl<S: Semantics> IeeeFloat<S> {
                 return Status::INEXACT.and(self);
             }
 
-            // NOTE(eddyb) for `NanOnly`, `INFINITY` (which isn't distinct from `NAN`)
-            // takes up the largest significand of `MAX_EXP` (which also has normals),
-            // though comparing significands has to ignore the integer bit it lacks.
+            // NOTE(eddyb) for `NonfiniteBehavior::NanOnly`, the unique `NAN` takes up
+            // the largest significand of `MAX_EXP` (which also has normals), though
+            // comparing significands needs to ignore the integer bit `NAN` lacks.
             if S::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly
-                && self.exp == Self::INFINITY.exp
-                && [self.sig[0] & ((1 << (S::PRECISION - 1)) - 1)] == Self::INFINITY.sig
+                && self.exp == Self::NAN.exp
+                && [self.sig[0] & S::NAN_SIGNIFICAND_BASE] == Self::NAN.sig
             {
                 return Self::overflow_result(round).map(|r| r.copy_sign(self));
             }
@@ -2039,7 +2132,7 @@ impl<S: Semantics> IeeeFloat<S> {
             sig: [0],
             exp: 0,
             read_only_category_do_not_mutate: Category::Normal,
-            sign: false,
+            read_only_sign_do_not_mutate: false,
             marker: PhantomData,
         };
 
@@ -2124,9 +2217,7 @@ impl<S: Semantics> IeeeFloat<S> {
                     return Err(ParseError("Exponent has no digits"));
                 }
 
-                if exp_minus {
-                    r.exp = -r.exp;
-                }
+                r.exp = r.exp.negate_if(exp_minus);
 
                 break;
             } else {
@@ -2233,9 +2324,7 @@ impl<S: Semantics> IeeeFloat<S> {
                     assert_eq!(dec_exp, 0);
                 }
 
-                if exp_minus {
-                    dec_exp = -dec_exp;
-                }
+                dec_exp = dec_exp.negate_if(exp_minus);
 
                 break;
             } else {
@@ -2551,7 +2640,7 @@ impl<S: Semantics> IeeeFloat<S> {
                     sig: [0],
                     exp,
                     read_only_category_do_not_mutate: Category::Normal,
-                    sign: false,
+                    read_only_sign_do_not_mutate: false,
                     marker: PhantomData,
                 };
                 sig::extract(&mut r.sig, &sig_calc, used_bits, calc_precision - used_bits);
@@ -2661,11 +2750,6 @@ mod sig {
     /// Set the given bit.
     pub(super) fn set_bit(limbs: &mut [Limb], bit: usize) {
         limbs[bit / LIMB_BITS] |= 1 << (bit % LIMB_BITS);
-    }
-
-    /// Clear the given bit.
-    pub(super) fn clear_bit(limbs: &mut [Limb], bit: usize) {
-        limbs[bit / LIMB_BITS] &= !(1 << (bit % LIMB_BITS));
     }
 
     /// Shift `dst` left `bits` bits, subtract `bits` from its exponent.
