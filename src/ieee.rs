@@ -416,6 +416,11 @@ ieee_semantics! {
         const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
         const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 4;
     },
+
+    // Floating point number that occupies 32 bits or less of storage, providing
+    // improved range compared to half (16-bit) formats, at (potentially)
+    // greater throughput than single precision (32-bit) formats.
+    FloatTF32 = FloatTF32S(19:8),
 }
 
 // FIXME(eddyb) consider moving X87-specific logic to a "has explicit integer bit"
