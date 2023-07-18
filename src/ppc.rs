@@ -35,6 +35,8 @@ type Fallback<F> = ieee::IeeeFloat<FallbackS<F>>;
 impl<F: Float> ieee::Semantics for FallbackS<F> {
     // Forbid any conversion to/from bits.
     const BITS: usize = 0;
+    const EXP_BITS: usize = 0;
+
     const PRECISION: usize = F::PRECISION * 2;
     const MAX_EXP: ExpInt = F::MAX_EXP as ExpInt;
     const MIN_EXP: ExpInt = F::MIN_EXP as ExpInt + F::PRECISION as ExpInt;
@@ -50,8 +52,11 @@ type FallbackExtended<F> = ieee::IeeeFloat<FallbackExtendedS<F>>;
 impl<F: Float> ieee::Semantics for FallbackExtendedS<F> {
     // Forbid any conversion to/from bits.
     const BITS: usize = 0;
+    const EXP_BITS: usize = 0;
+
     const PRECISION: usize = Fallback::<F>::PRECISION;
     const MAX_EXP: ExpInt = F::MAX_EXP as ExpInt;
+    const MIN_EXP: ExpInt = F::MIN_EXP as ExpInt;
 }
 
 impl<F: Float> From<Fallback<F>> for DoubleFloat<F>
