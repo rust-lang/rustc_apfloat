@@ -73,20 +73,47 @@ enum Loss {
 }
 
 /// How the nonfinite values Inf and NaN are represented.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NonfiniteBehavior {
     /// Represents standard IEEE 754 behavior. A value is nonfinite if the
     /// exponent field is all 1s. In such cases, a value is Inf if the
     /// significand bits are all zero, and NaN otherwise
     IEEE754,
 
-    /// Only the Float8E5M2 has this behavior. There is no Inf representation. A
-    /// value is NaN if the exponent field and the mantissa field are all 1s.
+    /// This behavior is present in the Float8ExMyFN* types (Float8E4M3FN,
+    /// Float8E5M2FNUZ, Float8E4M3FNUZ, and Float8E4M3B11FNUZ). There is no
+    /// representation for Inf, and operations that would ordinarily produce Inf
+    /// produce NaN instead.
+    /// The details of the NaN representation(s) in this form are determined by the
+    /// `NanEncoding` enum. We treat all NaNs as quiet, as the available
+    /// encodings do not distinguish between signalling and quiet NaN.
+    NanOnly,
+}
+
+/// How NaN values are represented. This is curently only used in combination
+/// with fltNonfiniteBehavior::NanOnly, and using a variant other than IEEE
+/// while having IEEE non-finite behavior is liable to lead to unexpected
+/// results.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NanEncoding {
+    /// Represents the standard IEEE behavior where a value is NaN if its
+    /// exponent is all 1s and the significand is non-zero.
+    IEEE,
+
+    /// Represents the behavior in the Float8E4M3 floating point type where NaN is
+    /// represented by having the exponent and mantissa set to all 1s.
     /// This behavior matches the FP8 E4M3 type described in
     /// https://arxiv.org/abs/2209.05433. We treat both signed and unsigned NaNs
     /// as non-signalling, although the paper does not state whether the NaN
     /// values are signalling or not.
-    NanOnly,
+    AllOnes,
+
+    /// Represents the behavior in Float8E{5,4}E{2,3}FNUZ floating point types
+    /// where NaN is represented by a sign bit of 1 and all 0s in the exponent
+    /// and mantissa (i.e. the negative zero encoding in a IEEE float). Since
+    /// there is only one NaN value, it is treated as quiet NaN. This matches the
+    /// behavior described in https://arxiv.org/abs/2206.02915 .
+    NegativeZero,
 }
 
 // HACK(eddyb) extension method flipping/changing the sign based on `bool`s.
@@ -122,6 +149,16 @@ pub trait Semantics: Sized {
     /// How the nonfinite values Inf and NaN are represented.
     const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::IEEE754;
 
+    /// How NaN values are represented.
+    const NAN_ENCODING: NanEncoding = {
+        match Self::NONFINITE_BEHAVIOR {
+            NonfiniteBehavior::IEEE754 => NanEncoding::IEEE,
+            NonfiniteBehavior::NanOnly => {
+                panic!("non-IEEE `NONFINITE_BEHAVIOR` without also overriding `NAN_ENCODING` to non-IEEE")
+            }
+        }
+    };
+
     /// The largest E such that 2^E is representable; this matches the
     /// definition of IEEE 754.
     const MAX_EXP: ExpInt = {
@@ -143,16 +180,16 @@ pub trait Semantics: Sized {
     /// The base significand bitpattern of NaNs, i.e. the bits that must always
     /// be set in all NaNs, with other significand bits being either used for
     /// payload bits (if `NAN_PAYLOAD_MASK` covers them) or always unset.
-    const NAN_SIGNIFICAND_BASE: Limb = match Self::NONFINITE_BEHAVIOR {
-        NonfiniteBehavior::IEEE754 => 0,
-        NonfiniteBehavior::NanOnly => (1 << (Self::PRECISION - 1)) - 1,
+    const NAN_SIGNIFICAND_BASE: Limb = match Self::NAN_ENCODING {
+        NanEncoding::IEEE | NanEncoding::NegativeZero => 0,
+        NanEncoding::AllOnes => (1 << (Self::PRECISION - 1)) - 1,
     };
 
     /// The significand bitmask for the payload of a NaN (if supported),
     /// including the "quiet bit" (telling QNaNs apart from SNaNs).
-    const NAN_PAYLOAD_MASK: Limb = match Self::NONFINITE_BEHAVIOR {
-        NonfiniteBehavior::IEEE754 => (1 << (Self::PRECISION - 1)) - 1,
-        NonfiniteBehavior::NanOnly => 0,
+    const NAN_PAYLOAD_MASK: Limb = match Self::NAN_ENCODING {
+        NanEncoding::IEEE => (1 << (Self::PRECISION - 1)) - 1,
+        NanEncoding::AllOnes | NanEncoding::NegativeZero => 0,
     };
 
     /// The significand bitpattern to mark a NaN as quiet (if supported).
@@ -302,13 +339,55 @@ ieee_semantics! {
     // layout S1E5M2 as described in https://arxiv.org/abs/2209.05433.
     Float8E5M2 = Float8E5M2S(8:5),
 
+    // 8-bit floating point number mostly following IEEE-754 conventions
+    // and bit layout S1E5M2 described in https://arxiv.org/abs/2206.02915,
+    // with expanded range and with no infinity or signed zero.
+    // NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero).
+    // This format's exponent bias is 16, instead of the 15 (2 ** (5 - 1) - 1)
+    // that IEEE precedent would imply.
+    Float8E5M2FNUZ = Float8E5M2FNUZS(8:5) {
+        const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
+        const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 1;
+    },
+
     // 8-bit floating point number mostly following IEEE-754 conventions with
     // bit layout S1E4M3 as described in https://arxiv.org/abs/2209.05433.
     // Unlike IEEE-754 types, there are no infinity values, and NaN is
     // represented with the exponent and mantissa bits set to all 1s.
     Float8E4M3FN = Float8E4M3FNS(8:4) {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::AllOnes;
     },
+
+    // 8-bit floating point number mostly following IEEE-754 conventions
+    // and bit layout S1E4M3 described in https://arxiv.org/abs/2206.02915,
+    // with expanded range and with no infinity or signed zero.
+    // NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero).
+    // This format's exponent bias is 8, instead of the 7 (2 ** (4 - 1) - 1)
+    // that IEEE precedent would imply.
+    Float8E4M3FNUZ = Float8E4M3FNUZS(8:4) {
+        const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
+        const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 1;
+    },
+
+    // 8-bit floating point number mostly following IEEE-754 conventions
+    // and bit layout S1E4M3 with expanded range and with no infinity or signed
+    // zero.
+    // NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero).
+    // This format's exponent bias is 11, instead of the 7 (2 ** (4 - 1) - 1)
+    // that IEEE precedent would imply.
+    Float8E4M3B11FNUZ = Float8E4M3B11FNUZS(8:4) {
+        const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
+        const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 4;
+    },
+
+    // Floating point number that occupies 32 bits or less of storage, providing
+    // improved range compared to half (16-bit) formats, at (potentially)
+    // greater throughput than single precision (32-bit) formats.
+    FloatTF32 = FloatTF32S(19:8),
 }
 
 // FIXME(eddyb) consider moving X87-specific logic to a "has explicit integer bit"
@@ -451,8 +530,14 @@ impl<S: Semantics> PartialOrd for IeeeFloat<S> {
 impl<S: Semantics> Neg for IeeeFloat<S> {
     type Output = Self;
     fn neg(mut self) -> Self {
-        self.read_only_sign_do_not_mutate = !self.is_negative();
-        self
+        // With NaN-as-negative-zero, neither NaN nor positive zero can change
+        // their signs.
+        if S::NAN_ENCODING == NanEncoding::NegativeZero && (self.is_zero() || self.is_nan()) {
+            self
+        } else {
+            self.read_only_sign_do_not_mutate = !self.is_negative();
+            self
+        }
     }
 }
 
@@ -851,16 +936,23 @@ impl<S: Semantics> IeeeFloat<S> {
                 None => 0,
             }];
 
-        let exp = match S::NONFINITE_BEHAVIOR {
-            NonfiniteBehavior::IEEE754 => S::MAX_EXP + 1,
-            NonfiniteBehavior::NanOnly => S::MAX_EXP,
+        let mut sign = false;
+        let exp = match S::NAN_ENCODING {
+            NanEncoding::IEEE => S::MAX_EXP + 1,
+            NanEncoding::AllOnes => S::MAX_EXP,
+            NanEncoding::NegativeZero => {
+                sign = true;
+                // FIXME(eddyb) `...[0]` only because we're in a `const fn`.
+                assert!(sig[0] == Self::ZERO.sig[0]);
+                Self::ZERO.exp
+            }
         };
 
         IeeeFloat {
             sig,
             exp,
             read_only_category_do_not_mutate: Category::NaN,
-            read_only_sign_do_not_mutate: false,
+            read_only_sign_do_not_mutate: sign,
             marker: PhantomData,
         }
     }
@@ -925,15 +1017,18 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         //   significand = 1..1
         IeeeFloat {
             sig: [((1 << S::PRECISION) - 1)
-                & match S::NONFINITE_BEHAVIOR {
+                & match S::NAN_ENCODING {
                     // The largest number by magnitude in our format will be the floating point
                     // number with maximum exponent and with significand that is all ones.
-                    NonfiniteBehavior::IEEE754 => !0,
+                    NanEncoding::IEEE | NanEncoding::NegativeZero => !0,
 
                     // The largest number by magnitude in our format will be the floating point
                     // number with maximum exponent and with significand that is all ones except
                     // the LSB.
-                    NonfiniteBehavior::NanOnly => !1,
+                    NanEncoding::AllOnes => {
+                        assert_eq!(S::NONFINITE_BEHAVIOR, NonfiniteBehavior::NanOnly);
+                        !1
+                    }
                 }],
             exp: S::MAX_EXP,
             read_only_category_do_not_mutate: Category::Normal,
@@ -1821,7 +1916,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         let max_change = S::MAX_EXP as i32 - (S::MIN_EXP as i32 - sig_bits) + 1;
 
         // Clamp to one past the range ends to let normalize handle overflow.
-        let exp_change = cmp::min(cmp::max(exp as i32, -max_change - 1), max_change);
+        let exp_change = (exp as i32).clamp(-max_change - 1, max_change);
         self.exp = self.exp.saturating_add(exp_change as ExpInt);
         self = self.normalize(round, Loss::ExactlyZero).value;
         if self.is_nan() {
@@ -1942,8 +2037,8 @@ impl<S: Semantics, T: Semantics> FloatConvert<IeeeFloat<T>> for IeeeFloat<S> {
             Category::Zero => IeeeFloat::<T>::ZERO.with_sign(self.is_negative()),
         };
 
-        // NOTE(eddyb) this catches all cases of e.g. ±Inf turning into NaN,
-        // because of `T::NONFINITE_BEHAVIOR` not being `IEEE754`.
+        // NOTE(eddyb) this catches all cases of e.g. ±Inf turning into NaN, or
+        // `-0` losing its sign, because of `T::NAN_ENCODING` not being `IEEE`.
         if matches!(self.category(), Category::Infinity | Category::Zero)
             && (r.category() != self.category() || r.is_negative() != self.is_negative())
         {
@@ -2050,13 +2145,14 @@ impl<S: Semantics> IeeeFloat<S> {
             }
         }
 
-        // NOTE(eddyb) for `NonfiniteBehavior::NanOnly`, the unique `NAN` takes up
+        // NOTE(eddyb) for `NanEncoding::AllOnes`, the unique `NAN` takes up
         // the largest significand of `MAX_EXP` (which also has normals), though
         // comparing significands needs to ignore the integer bit `NAN` lacks.
-        if S::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly
+        if S::NAN_ENCODING == NanEncoding::AllOnes
             && self.exp == Self::NAN.exp
             && [self.sig[0] & S::NAN_SIGNIFICAND_BASE] == Self::NAN.sig
         {
+            assert_eq!(S::NONFINITE_BEHAVIOR, NonfiniteBehavior::NanOnly);
             return Self::overflow_result(round).map(|r| r.copy_sign(self));
         }
 
@@ -2098,13 +2194,14 @@ impl<S: Semantics> IeeeFloat<S> {
                 return Status::INEXACT.and(self);
             }
 
-            // NOTE(eddyb) for `NonfiniteBehavior::NanOnly`, the unique `NAN` takes up
+            // NOTE(eddyb) for `NanEncoding::AllOnes`, the unique `NAN` takes up
             // the largest significand of `MAX_EXP` (which also has normals), though
             // comparing significands needs to ignore the integer bit `NAN` lacks.
-            if S::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly
+            if S::NAN_ENCODING == NanEncoding::AllOnes
                 && self.exp == Self::NAN.exp
                 && [self.sig[0] & S::NAN_SIGNIFICAND_BASE] == Self::NAN.sig
             {
+                assert_eq!(S::NONFINITE_BEHAVIOR, NonfiniteBehavior::NanOnly);
                 return Self::overflow_result(round).map(|r| r.copy_sign(self));
             }
         }

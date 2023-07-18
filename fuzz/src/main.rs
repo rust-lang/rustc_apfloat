@@ -220,15 +220,35 @@ float_reprs! {
         const REPR_TAG = 8 + 0;
         extern fn = cxx_apf_fuzz_eval_op_f8e5m2;
     }
+    F8E5M2FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E5M2FNUZ;
+        const REPR_TAG = 8 + 2;
+        extern fn = cxx_apf_fuzz_eval_op_f8e5m2fnuz;
+    }
     F8E4M3FN(u8) {
         type RustcApFloat = rustc_apfloat::ieee::Float8E4M3FN;
         const REPR_TAG = 8 + 1;
         extern fn = cxx_apf_fuzz_eval_op_f8e4m3fn;
     }
+    F8E4M3FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E4M3FNUZ;
+        const REPR_TAG = 8 + 3;
+        extern fn = cxx_apf_fuzz_eval_op_f8e4m3fnuz;
+    }
+    F8E4M3B11FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E4M3B11FNUZ;
+        const REPR_TAG = 8 + 4;
+        extern fn = cxx_apf_fuzz_eval_op_f8e4m3b11fnuz;
+    }
     BrainF16(u16) {
         type RustcApFloat = rustc_apfloat::ieee::BFloat;
         const REPR_TAG = 16 + 1;
         extern fn = cxx_apf_fuzz_eval_op_brainf16;
+    }
+    NV_TensorF32(u32) {
+        type RustcApFloat = rustc_apfloat::ieee::FloatTF32;
+        const REPR_TAG = 32 + 1;
+        extern fn = cxx_apf_fuzz_eval_op_nv_tensorf32;
     }
     X87_F80(u128) {
         type RustcApFloat = rustc_apfloat::ieee::X87DoubleExtended;
