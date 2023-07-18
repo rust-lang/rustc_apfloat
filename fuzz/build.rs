@@ -7,6 +7,10 @@ fn main() -> std::io::Result<ExitCode> {
     // change to *the entire source tree* (i.e. the default is roughly `./`).
     println!("cargo:rerun-if-changed=build.rs");
 
+    // NOTE(eddyb) `rustc_apfloat`'s own `build.rs` validated the version string.
+    let (_, llvm_commit_hash) = env!("CARGO_PKG_VERSION").split_once("+llvm-").unwrap();
+    assert_eq!(llvm_commit_hash.len(), 12);
+
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(out_dir.join("generated_fuzz_ops.rs"), ops::generate_rust())?;
 
@@ -40,11 +44,7 @@ fn main() -> std::io::Result<ExitCode> {
     let sh_script_exit_status = Command::new("sh")
         .args(["-c", SH_SCRIPT])
         .envs([
-            // FIXME(eddyb) ensure this is kept in sync.
-            (
-                "llvm_project_git_hash",
-                "f3598e8fca83ccfb11f58ec7957c229e349765e3",
-            ),
+            ("llvm_project_git_hash", llvm_commit_hash),
             ("cxx_apf_fuzz_exports", &cxx_exported_symbols.join(",")),
             (
                 "cxx_apf_fuzz_is_fuzzing",
