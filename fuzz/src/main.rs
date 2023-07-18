@@ -253,6 +253,11 @@ float_reprs! {
         const REPR_TAG = 8 + 3;
         extern fn = cxx_apf_fuzz_eval_op_f8e4m3fnuz;
     }
+    F8E4M3B11FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E4M3B11FNUZ;
+        const REPR_TAG = 8 + 4;
+        extern fn = cxx_apf_fuzz_eval_op_f8e4m3b11fnuz;
+    }
     BrainF16(u16) {
         type RustcApFloat = rustc_apfloat::ieee::BFloat;
         const REPR_TAG = 16 + 1;

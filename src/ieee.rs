@@ -90,8 +90,9 @@ pub enum NonfiniteBehavior {
     IEEE754,
 
     /// This behavior is present in the Float8ExMyFN* types (Float8E4M3FN,
-    /// Float8E5M2FNUZ and Float8E4M3FNUZ). There is no representation for Inf,
-    /// and operations that would ordinarily produce Inf produce NaN instead.
+    /// Float8E5M2FNUZ, Float8E4M3FNUZ, and Float8E4M3B11FNUZ). There is no
+    /// representation for Inf, and operations that would ordinarily produce Inf
+    /// produce NaN instead.
     ///
     /// The details of the NaN representation(s) in this form are determined by the
     /// `NanEncoding` enum. We treat all NaNs as quiet, as the available
@@ -402,6 +403,18 @@ ieee_semantics! {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
         const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
         const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 1;
+    },
+
+    // 8-bit floating point number mostly following IEEE-754 conventions
+    // and bit layout S1E4M3 with expanded range and with no infinity or signed
+    // zero.
+    // NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero).
+    // This format's exponent bias is 11, instead of the 7 (2 ** (4 - 1) - 1)
+    // that IEEE precedent would imply.
+    Float8E4M3B11FNUZ = Float8E4M3B11FNUZS(8:4) {
+        const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
+        const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 4;
     },
 }
 
