@@ -1,0 +1,39 @@
+name: CI
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  merge_group:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        build: [stable, beta, nightly]
+        include:
+          - build: stable
+            os: ubuntu-latest
+            rust: stable
+          - build: beta
+            os: ubuntu-latest
+            rust: beta
+          - build: nightly
+            os: ubuntu-latest
+            rust: nightly
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Rust
+      run: rustup update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
+    - name: Build and run tests
+      run: cargo test
+
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install Rust
+      run: rustup update stable && rustup default stable && rustup component add rustfmt
+    - run: cargo fmt --check
