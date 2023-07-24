@@ -39,6 +39,7 @@ pub struct IeeeFloat<S> {
 /// large to store the largest significands by itself.
 type Limb = u128;
 const LIMB_BITS: usize = 128;
+#[inline(always)]
 fn limbs_for_bits(bits: usize) -> usize {
     (bits + LIMB_BITS - 1) / LIMB_BITS
 }
@@ -337,6 +338,7 @@ impl Semantics for X87DoubleExtendedS {
     ///  exponent!=0 nor all 1's, integer bit 0 ("unnormal")
     ///  exponent = 0, integer bit 1 ("pseudodenormal")
     /// At the moment, the first three are treated as NaNs, the last one as Normal.
+    #[inline]
     fn from_bits(bits: u128) -> IeeeFloat<Self> {
         let sign = bits & (1 << (Self::BITS - 1));
         let exponent = ((bits & !sign) >> (Self::BITS - 1 - Self::EXP_BITS)) & ((1 << Self::EXP_BITS) - 1);
@@ -373,6 +375,7 @@ impl Semantics for X87DoubleExtendedS {
         r
     }
 
+    #[inline]
     fn to_bits(x: IeeeFloat<Self>) -> u128 {
         // Get integer bit from significand.
         let integer_bit = sig::get_bit(&x.sig, Self::PRECISION - 1);
@@ -2656,6 +2659,7 @@ impl<S: Semantics> IeeeFloat<S> {
 
 impl Loss {
     /// Combine the effect of two lost fractions.
+    #[inline]
     fn combine(self, less_significant: Loss) -> Loss {
         let mut more_significant = self;
         if less_significant != Loss::ExactlyZero {
@@ -2671,6 +2675,7 @@ impl Loss {
 
     /// Return the fraction lost were a bignum truncated losing the least
     /// significant `bits` bits.
+    #[inline]
     fn through_truncation(limbs: &[Limb], bits: usize) -> Loss {
         if bits == 0 {
             return Loss::ExactlyZero;
@@ -2703,11 +2708,13 @@ mod sig {
     use core::cmp::Ordering;
     use core::mem;
 
+    #[inline]
     pub(super) fn is_all_zeros(limbs: &[Limb]) -> bool {
         limbs.iter().all(|&l| l == 0)
     }
 
     /// One, not zero, based LSB. That is, returns 0 for a zeroed significand.
+    #[inline]
     pub(super) fn olsb(limbs: &[Limb]) -> usize {
         for i in 0..limbs.len() {
             if limbs[i] != 0 {
@@ -2719,6 +2726,7 @@ mod sig {
     }
 
     /// One, not zero, based MSB. That is, returns 0 for a zeroed significand.
+    #[inline]
     pub(super) fn omsb(limbs: &[Limb]) -> usize {
         for i in (0..limbs.len()).rev() {
             if limbs[i] != 0 {
@@ -2730,6 +2738,7 @@ mod sig {
     }
 
     /// Comparison (unsigned) of two significands.
+    #[inline]
     pub(super) fn cmp(a: &[Limb], b: &[Limb]) -> Ordering {
         assert_eq!(a.len(), b.len());
         for (a, b) in a.iter().zip(b).rev() {
@@ -2743,16 +2752,19 @@ mod sig {
     }
 
     /// Extract the given bit.
+    #[inline]
     pub(super) fn get_bit(limbs: &[Limb], bit: usize) -> bool {
         limbs[bit / LIMB_BITS] & (1 << (bit % LIMB_BITS)) != 0
     }
 
     /// Set the given bit.
+    #[inline]
     pub(super) fn set_bit(limbs: &mut [Limb], bit: usize) {
         limbs[bit / LIMB_BITS] |= 1 << (bit % LIMB_BITS);
     }
 
     /// Shift `dst` left `bits` bits, subtract `bits` from its exponent.
+    #[inline]
     pub(super) fn shift_left(dst: &mut [Limb], exp: &mut ExpInt, bits: usize) {
         if bits > 0 {
             // Our exponent should not underflow.
@@ -2785,6 +2797,7 @@ mod sig {
     }
 
     /// Shift `dst` right `bits` bits noting lost fraction.
+    #[inline]
     pub(super) fn shift_right(dst: &mut [Limb], exp: &mut ExpInt, bits: usize) -> Loss {
         let loss = Loss::through_truncation(dst, bits);
 
@@ -2823,6 +2836,7 @@ mod sig {
     /// Copy the bit vector of width `src_bits` from `src`, starting at bit SRC_LSB,
     /// to `dst`, such that the bit SRC_LSB becomes the least significant bit of `dst`.
     /// All high bits above `src_bits` in `dst` are zero-filled.
+    #[inline]
     pub(super) fn extract(dst: &mut [Limb], src: &[Limb], src_bits: usize, src_lsb: usize) {
         if src_bits == 0 {
             return;
@@ -2856,6 +2870,7 @@ mod sig {
 
     /// We want the most significant PRECISION bits of `src`. There may not
     /// be that many; extract what we can.
+    #[inline]
     pub(super) fn from_limbs(dst: &mut [Limb], src: &[Limb], precision: usize) -> (Loss, ExpInt) {
         let omsb = omsb(src);
 
@@ -2871,6 +2886,7 @@ mod sig {
     /// For every consecutive chunk of `bits` bits from `limbs`,
     /// going from most significant to the least significant bits,
     /// call `f` to transform those bits and store the result back.
+    #[inline]
     pub(super) fn each_chunk<F: FnMut(Limb) -> Limb>(limbs: &mut [Limb], bits: usize, mut f: F) {
         assert_eq!(LIMB_BITS % bits, 0);
         for limb in limbs.iter_mut().rev() {
@@ -2883,6 +2899,7 @@ mod sig {
     }
 
     /// Increment in-place, return the carry flag.
+    #[inline]
     pub(super) fn increment(dst: &mut [Limb]) -> Limb {
         for x in dst {
             *x = x.wrapping_add(1);
@@ -2895,6 +2912,7 @@ mod sig {
     }
 
     /// Decrement in-place, return the borrow flag.
+    #[inline]
     pub(super) fn decrement(dst: &mut [Limb]) -> Limb {
         for x in dst {
             *x = x.wrapping_sub(1);
@@ -2907,6 +2925,7 @@ mod sig {
     }
 
     /// `a += b + c` where `c` is zero or one. Returns the carry flag.
+    #[inline]
     pub(super) fn add(a: &mut [Limb], b: &[Limb], mut c: Limb) -> Limb {
         assert!(c <= 1);
 
@@ -2921,6 +2940,7 @@ mod sig {
     }
 
     /// `a -= b + c` where `c` is zero or one. Returns the borrow flag.
+    #[inline]
     pub(super) fn sub(a: &mut [Limb], b: &[Limb], mut c: Limb) -> Limb {
         assert!(c <= 1);
 
@@ -2935,6 +2955,7 @@ mod sig {
     }
 
     /// `a += b` or `a -= b`. Does not preserve `b`.
+    #[inline]
     pub(super) fn add_or_sub(
         a_sig: &mut [Limb],
         a_exp: &mut ExpInt,
@@ -3000,6 +3021,7 @@ mod sig {
     /// `(n - 1) * (n - 1) + 2 * (n - 1) == (n - 1) * (n + 1)`
     ///
     /// which is less than n^2.
+    #[inline]
     pub(super) fn widening_mul(a: Limb, b: Limb) -> [Limb; 2] {
         let mut wide = [0, 0];
 
@@ -3022,6 +3044,7 @@ mod sig {
     }
 
     /// `dst = a * b` (for normal `a` and `b`). Returns the lost fraction.
+    #[inline]
     pub(super) fn mul<'a>(
         dst: &mut [Limb],
         exp: &mut ExpInt,
@@ -3092,6 +3115,7 @@ mod sig {
 
     /// `quotient = dividend / divisor`. Returns the lost fraction.
     /// Does not preserve `dividend` or `divisor`.
+    #[inline]
     pub(super) fn div(
         quotient: &mut [Limb],
         exp: &mut ExpInt,

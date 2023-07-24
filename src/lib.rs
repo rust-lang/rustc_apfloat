@@ -127,6 +127,7 @@ pub enum Round {
 
 impl Neg for Round {
     type Output = Round;
+    #[inline]
     fn neg(self) -> Round {
         match self {
             Round::TowardPositive => Round::TowardNegative,
@@ -608,6 +609,7 @@ macro_rules! float_common_impls {
         where
             Self: Float,
         {
+            #[inline]
             fn default() -> Self {
                 Self::ZERO
             }
@@ -618,6 +620,7 @@ macro_rules! float_common_impls {
             Self: Float,
         {
             type Err = ParseError;
+            #[inline]
             fn from_str(s: &str) -> Result<Self, ParseError> {
                 Self::from_str_r(s, Round::NearestTiesToEven).map(|x| x.value)
             }
@@ -630,6 +633,7 @@ macro_rules! float_common_impls {
             Self: Float,
         {
             type Output = StatusAnd<Self>;
+            #[inline]
             fn add(self, rhs: Self) -> StatusAnd<Self> {
                 self.add_r(rhs, Round::NearestTiesToEven)
             }
@@ -640,6 +644,7 @@ macro_rules! float_common_impls {
             Self: Float,
         {
             type Output = StatusAnd<Self>;
+            #[inline]
             fn sub(self, rhs: Self) -> StatusAnd<Self> {
                 self.sub_r(rhs, Round::NearestTiesToEven)
             }
@@ -650,6 +655,7 @@ macro_rules! float_common_impls {
             Self: Float,
         {
             type Output = StatusAnd<Self>;
+            #[inline]
             fn mul(self, rhs: Self) -> StatusAnd<Self> {
                 self.mul_r(rhs, Round::NearestTiesToEven)
             }
@@ -660,6 +666,7 @@ macro_rules! float_common_impls {
             Self: Float,
         {
             type Output = StatusAnd<Self>;
+            #[inline]
             fn div(self, rhs: Self) -> StatusAnd<Self> {
                 self.div_r(rhs, Round::NearestTiesToEven)
             }
@@ -670,6 +677,7 @@ macro_rules! float_common_impls {
             Self: Float,
         {
             type Output = StatusAnd<Self>;
+            #[inline]
             fn rem(self, rhs: Self) -> StatusAnd<Self> {
                 self.c_fmod(rhs)
             }
@@ -679,6 +687,7 @@ macro_rules! float_common_impls {
         where
             Self: Float,
         {
+            #[inline]
             fn add_assign(&mut self, rhs: Self) {
                 *self = (*self + rhs).value;
             }
@@ -688,6 +697,7 @@ macro_rules! float_common_impls {
         where
             Self: Float,
         {
+            #[inline]
             fn sub_assign(&mut self, rhs: Self) {
                 *self = (*self - rhs).value;
             }
@@ -697,6 +707,7 @@ macro_rules! float_common_impls {
         where
             Self: Float,
         {
+            #[inline]
             fn mul_assign(&mut self, rhs: Self) {
                 *self = (*self * rhs).value;
             }
@@ -706,6 +717,7 @@ macro_rules! float_common_impls {
         where
             Self: Float,
         {
+            #[inline]
             fn div_assign(&mut self, rhs: Self) {
                 *self = (*self / rhs).value;
             }
@@ -715,6 +727,7 @@ macro_rules! float_common_impls {
         where
             Self: Float,
         {
+            #[inline]
             fn rem_assign(&mut self, rhs: Self) {
                 *self = (*self % rhs).value;
             }
