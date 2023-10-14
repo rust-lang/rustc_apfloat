@@ -1873,6 +1873,15 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         self.read_only_category_do_not_mutate
     }
 
+    fn make_quiet(mut self) -> Self {
+        if self.is_nan() {
+            self.sig[0] |= S::QNAN_SIGNIFICAND;
+            self
+        } else {
+            self
+        }
+    }
+
     fn get_exact_inverse(self) -> Option<Self> {
         // Special floats and denormals have no exact inverse.
         if !self.is_finite_non_zero() {

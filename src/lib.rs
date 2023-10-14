@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/6109e70c72fc5171d25c4467fc3cfe6eb2029f50>
+//! <https://github.com/llvm/llvm-project/commit/83ba349ae0a853e0c2cd8e8aadc88993e9fb9a19>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -581,6 +581,9 @@ pub trait Float:
         }
         self.round_to_integral(Round::TowardZero).value.bitwise_eq(self)
     }
+
+    /// If the value is a signaling NaN, makes it quiet
+    fn make_quiet(self) -> Self;
 
     /// If this value has an exact multiplicative inverse, return it.
     fn get_exact_inverse(self) -> Option<Self>;
