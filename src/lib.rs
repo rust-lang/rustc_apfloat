@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/e60b91df1357e6a5f66840581f4d5f57e258c0b4>
+//! <https://github.com/llvm/llvm-project/commit/4dc08de9d2f680309cdd639169d3b8802c76ae9a>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
