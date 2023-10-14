@@ -428,6 +428,10 @@ where
         self.0.is_integer() && self.1.is_integer()
     }
 
+    fn make_quiet(self) -> Self {
+        Self(self.0.make_quiet(), self.1)
+    }
+
     fn get_exact_inverse(self) -> Option<Self> {
         Fallback::from(self).get_exact_inverse().map(Self::from)
     }
