@@ -99,10 +99,11 @@ pub enum NonfiniteBehavior {
     NanOnly,
 }
 
-/// How NaN values are represented. This is curently only used in combination
-/// with fltNonfiniteBehavior::NanOnly, and using a variant other than IEEE
-/// while having IEEE non-finite behavior is liable to lead to unexpected
-/// results.
+/// How NaN values are represented.
+///
+/// This is curently only used in combination with `NonfiniteBehavior::NanOnly`,
+/// and using a variant other than IEEE while having IEEE non-finite behavior is
+/// liable to lead to unexpected results.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NanEncoding {
     /// Represents the standard IEEE behavior where a value is NaN if its
@@ -555,12 +556,10 @@ impl<S: Semantics> Neg for IeeeFloat<S> {
     fn neg(mut self) -> Self {
         // With NaN-as-negative-zero, neither NaN nor positive zero can change
         // their signs.
-        if S::NAN_ENCODING == NanEncoding::NegativeZero && (self.is_zero() || self.is_nan()) {
-            self
-        } else {
+        if S::NAN_ENCODING != NanEncoding::NegativeZero || (!self.is_nan() && !self.is_zero()) {
             self.read_only_sign_do_not_mutate = !self.is_negative();
-            self
         }
+        self
     }
 }
 
@@ -959,15 +958,13 @@ impl<S: Semantics> IeeeFloat<S> {
                 None => 0,
             }];
 
-        let mut sign = false;
-        let exp = match S::NAN_ENCODING {
-            NanEncoding::IEEE => S::MAX_EXP + 1,
-            NanEncoding::AllOnes => S::MAX_EXP,
+        let (exp, sign) = match S::NAN_ENCODING {
+            NanEncoding::IEEE => (S::MAX_EXP + 1, false),
+            NanEncoding::AllOnes => (S::MAX_EXP, false),
             NanEncoding::NegativeZero => {
-                sign = true;
                 // FIXME(eddyb) `...[0]` only because we're in a `const fn`.
                 assert!(sig[0] == Self::ZERO.sig[0]);
-                Self::ZERO.exp
+                (Self::ZERO.exp, true)
             }
         };
 
@@ -2168,6 +2165,8 @@ impl<S: Semantics> IeeeFloat<S> {
             }
         }
 
+        // The all-ones values is an overflow if NaN is all ones. If NaN is
+        // represented by negative zero, then it is a valid finite value.
         // NOTE(eddyb) for `NanEncoding::AllOnes`, the unique `NAN` takes up
         // the largest significand of `MAX_EXP` (which also has normals), though
         // comparing significands needs to ignore the integer bit `NAN` lacks.
@@ -2217,6 +2216,8 @@ impl<S: Semantics> IeeeFloat<S> {
                 return Status::INEXACT.and(self);
             }
 
+            // The all-ones values is an overflow if NaN is all ones. If NaN is
+            // represented by negative zero, then it is a valid finite value.
             // NOTE(eddyb) for `NanEncoding::AllOnes`, the unique `NAN` takes up
             // the largest significand of `MAX_EXP` (which also has normals), though
             // comparing significands needs to ignore the integer bit `NAN` lacks.
