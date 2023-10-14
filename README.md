@@ -89,7 +89,7 @@ Example usage:
 
 ```sh
 # Install `cargo-afl` (used below to build/run the fuzzing binary).
-cargo install afl
+cargo install cargo-afl
 
 # Build the fuzzing binary (`target/release/rustc_apfloat-fuzz`).
 cargo afl build -p rustc_apfloat-fuzz --release
