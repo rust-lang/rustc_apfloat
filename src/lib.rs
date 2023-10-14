@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/4dc08de9d2f680309cdd639169d3b8802c76ae9a>
+//! <https://github.com/llvm/llvm-project/commit/038f7debfda01471ce0d4eb1fed20da61e5c8b32>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -274,6 +274,16 @@ pub trait Float:
     /// NaN (Not a Number).
     // FIXME(eddyb) provide a default when qnan becomes const fn.
     const NAN: Self;
+
+    /// Number of bits needed to represent the largest integer that
+    /// the floating point type can hold.
+    // FIXME should be const fn.
+    fn max_int_bits(signed: bool) -> usize {
+        // The max FP value is pow(2, MaxExponent) * (1 + MaxFraction), so we need
+        // at least one more bit than the MaxExponent to hold the max FP value.
+        // Another extra sign bit is needed for signed integers.
+        Self::MAX_EXP as usize + 1 + (signed as usize)
+    }
 
     /// Factory for QNaN values.
     // FIXME(eddyb) should be const fn.
