@@ -3,8 +3,8 @@ extern crate rustc_apfloat;
 
 use core::cmp::Ordering;
 use rustc_apfloat::ieee::{
-    BFloat, Double, Float8E4M3B11FNUZ, Float8E4M3FN, Float8E4M3FNUZ, Float8E5M2, Float8E5M2FNUZ, Half, Quad, Single,
-    X87DoubleExtended,
+    BFloat, Double, Float8E4M3B11FNUZ, Float8E4M3FN, Float8E4M3FNUZ, Float8E5M2, Float8E5M2FNUZ, FloatTF32, Half, Quad,
+    Single, X87DoubleExtended,
 };
 use rustc_apfloat::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
@@ -35,6 +35,7 @@ define_for_each_float_type! {
     Float8E4M3FNUZ,
     Float8E5M2FNUZ,
     Float8E4M3B11FNUZ,
+    FloatTF32,
     X87DoubleExtended,
 
     // NOTE(eddyb) tests for this are usually in `ppc.rs` but this works too.
@@ -95,6 +96,7 @@ impl ToF32LosslessViaConvertToSingle for Float8E4M3FN {}
 impl ToF32LosslessViaConvertToSingle for Float8E4M3FNUZ {}
 impl ToF32LosslessViaConvertToSingle for Float8E5M2FNUZ {}
 impl ToF32LosslessViaConvertToSingle for Float8E4M3B11FNUZ {}
+impl ToF32LosslessViaConvertToSingle for FloatTF32 {}
 
 trait ToF64LosslessViaConvertToDouble: FloatConvert<Double> {
     fn to_f64(self) -> f64 {
@@ -752,6 +754,23 @@ fn denormal() {
         assert!(!t.is_denormal());
 
         t /= Quad::from_u128(2).value;
+        assert!(t.is_denormal());
+    }
+
+    // Test TF32
+    {
+        assert!(!FloatTF32::from_u128(0).value.is_denormal());
+
+        let mut t = "1.17549435082228750797e-38".parse::<FloatTF32>().unwrap();
+        assert!(!t.is_denormal());
+
+        t /= FloatTF32::from_u128(2).value;
+        assert!(t.is_denormal());
+
+        let mut t = "-1.17549435082228750797e-38".parse::<FloatTF32>().unwrap();
+        assert!(!t.is_denormal());
+
+        t /= FloatTF32::from_u128(2).value;
         assert!(t.is_denormal());
     }
 }
@@ -1421,6 +1440,19 @@ fn nan() {
         (0x80, true, false, 0xaa),
         (0x80, true, true, 0xaa),
     ];
+    let test_tf32 = [
+        // ex.    SNaN   Neg    payload
+        (0x3fe00, false, false, 0x00000000),
+        (0x7fe00, false, true, 0x00000000),
+        (0x3feaa, false, false, 0xaa),
+        (0x3ffaa, false, false, 0xdaa),
+        (0x3ffaa, false, false, 0xfdaa),
+        (0x3fd00, true, false, 0x00000000),
+        (0x7fd00, true, true, 0x00000000),
+        (0x3fcaa, true, false, 0xaa),
+        (0x3fdaa, true, false, 0xfaa),
+        (0x3fdaa, true, false, 0x1aa),
+    ];
     for (expected, signaling, negative, payload) in tests_single {
         assert_eq!(expected, nanbits_from_u128::<Single>(signaling, negative, payload));
     }
@@ -1435,6 +1467,9 @@ fn nan() {
     }
     for (expected, signaling, negative, payload) in tests_8e4m3b11fnuz {
         assert_eq!(expected, nanbits_from_u128::<Float8E4M3B11FNUZ>(signaling, negative, payload));
+    }
+    for (expected, signaling, negative, payload) in test_tf32 {
+        assert_eq!(expected, nanbits_from_u128::<FloatTF32>(signaling, negative, payload));
     }
 }
 
@@ -1793,6 +1828,7 @@ fn largest() {
     assert_eq!(240.0, Float8E4M3FNUZ::largest().to_f64());
     assert_eq!(57344.0, Float8E5M2FNUZ::largest().to_f64());
     assert_eq!(30.0, Float8E4M3B11FNUZ::largest().to_f64());
+    assert_eq!(3.40116213421e+38, FloatTF32::largest().to_f32());
 }
 
 #[test]
@@ -1842,6 +1878,13 @@ fn smallest() {
     let test = Float8E4M3B11FNUZ::SMALLEST;
     let expected = "0x0.2p-10".parse::<Float8E4M3B11FNUZ>().unwrap();
     assert!(!test.is_negative());
+    assert!(test.is_finite_non_zero());
+    assert!(test.is_denormal());
+    assert!(test.bitwise_eq(expected));
+
+    let test = -FloatTF32::SMALLEST;
+    let expected = "-0x0.004p-126".parse::<FloatTF32>().unwrap();
+    assert!(test.is_negative());
     assert!(test.is_finite_non_zero());
     assert!(test.is_denormal());
     assert!(test.bitwise_eq(expected));
@@ -1920,6 +1963,14 @@ fn smallest_normalized() {
     assert!(!test.is_denormal());
     assert!(test.bitwise_eq(expected));
     assert!(test.is_smallest_normalized());
+
+    let test = FloatTF32::smallest_normalized();
+    let expected = "0x1p-126".parse::<FloatTF32>().unwrap();
+    assert!(!test.is_negative());
+    assert!(test.is_finite_non_zero());
+    assert!(!test.is_denormal());
+    assert!(test.bitwise_eq(expected));
+    assert!(test.is_smallest_normalized());
 }
 
 #[test]
@@ -1961,6 +2012,8 @@ fn zero() {
     test::<Float8E4M3FNUZ>(true, false, 0);
     test::<Float8E4M3B11FNUZ>(false, false, 0);
     test::<Float8E4M3B11FNUZ>(true, false, 0);
+    test::<FloatTF32>(false, true, 0);
+    test::<FloatTF32>(true, true, 0x40000);
 }
 
 #[test]
@@ -5477,6 +5530,32 @@ fn float8e4m3fnuz_to_f64() {
 }
 
 #[test]
+fn float_tf32_to_f64() {
+    let one = "1.0".parse::<FloatTF32>().unwrap();
+    assert_eq!(1.0, one.to_f64());
+    let pos_largest = FloatTF32::largest();
+    assert_eq!(3.401162134214653489792616e+38, pos_largest.to_f64());
+    let neg_largest = -FloatTF32::largest();
+    assert_eq!(-3.401162134214653489792616e+38, neg_largest.to_f64());
+    let pos_smallest = FloatTF32::smallest_normalized();
+    assert_eq!(1.1754943508222875079687e-38, pos_smallest.to_f64());
+    let neg_smallest = -FloatTF32::smallest_normalized();
+    assert_eq!(-1.1754943508222875079687e-38, neg_smallest.to_f64());
+
+    let smallest_denorm = FloatTF32::SMALLEST;
+    assert_eq!(1.1479437019748901445007e-41, smallest_denorm.to_f64());
+    let largest_denorm = "0x1.FF8p-127".parse::<FloatTF32>().unwrap();
+    assert_eq!(1.1743464071203126178242e-38, largest_denorm.to_f64());
+
+    let pos_inf = FloatTF32::INFINITY;
+    assert_eq!(f64::INFINITY, pos_inf.to_f64());
+    let neg_inf = -FloatTF32::INFINITY;
+    assert_eq!(f64::NEG_INFINITY, neg_inf.to_f64());
+    let qnan = FloatTF32::NAN;
+    assert!(qnan.to_f64().is_nan());
+}
+
+#[test]
 fn float8e5m2fnuz_to_f32() {
     let pos_zero = Float8E5M2FNUZ::ZERO;
     let pos_zero_to_float = pos_zero.to_f32();
@@ -5692,5 +5771,34 @@ fn float8e4m3fn_to_f32() {
     assert_eq!(/* 0x1.p-9 */ 0.001953125, smallest_denorm.to_f32());
 
     let qnan = Float8E4M3FN::qnan(None);
+    assert!(qnan.to_f32().is_nan());
+}
+
+#[test]
+fn float_tf32_to_f32() {
+    let pos_zero = FloatTF32::ZERO;
+    assert!(Single::from_f32(pos_zero.to_f32()).is_pos_zero());
+    let neg_zero = -FloatTF32::ZERO;
+    assert!(Single::from_f32(neg_zero.to_f32()).is_neg_zero());
+
+    let one = "1.0".parse::<FloatTF32>().unwrap();
+    assert_eq!(1.0, one.to_f32());
+    let two = "2.0".parse::<FloatTF32>().unwrap();
+    assert_eq!(2.0, two.to_f32());
+
+    let pos_largest = FloatTF32::largest();
+    assert_eq!(3.40116213421e+38, pos_largest.to_f32());
+    let neg_largest = -FloatTF32::largest();
+    assert_eq!(-3.40116213421e+38, neg_largest.to_f32());
+    let pos_smallest = FloatTF32::smallest_normalized();
+    assert_eq!(/*0x1.p-126*/ 1.1754943508222875e-38, pos_smallest.to_f32());
+    let neg_smallest = -FloatTF32::smallest_normalized();
+    assert_eq!(/*-0x1.p-126*/ -1.1754943508222875e-38, neg_smallest.to_f32());
+
+    let smallest_denorm = FloatTF32::SMALLEST;
+    assert!(smallest_denorm.is_denormal());
+    assert_eq!(/*0x0.004p-126*/ 1.148e-41, smallest_denorm.to_f32());
+
+    let qnan = FloatTF32::qnan(None);
     assert!(qnan.to_f32().is_nan());
 }
