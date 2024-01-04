@@ -5199,6 +5199,52 @@ fn f8_to_string() {
     }
 }
 
+#[test]
+fn bits_to_f8_to_bits() {
+    fn test<F: Float>() {
+        for bits_in in 0..=255 {
+            let test = F::from_bits(bits_in);
+            let bits_out = test.to_bits();
+            assert_eq!(bits_in, bits_out);
+        }
+    }
+
+    test::<Float8E5M2>();
+    test::<Float8E4M3FN>();
+    test::<Float8E5M2FNUZ>();
+    test::<Float8E4M3FNUZ>();
+    test::<Float8E4M3B11FNUZ>();
+}
+
+#[test]
+fn f8_to_bits_to_f8() {
+    fn test<F: Float>() {
+        for negative in [false, true] {
+            let mut test = if negative { -F::ZERO } else { F::ZERO };
+            for _ in 0..128 {
+                let bits = test.to_bits();
+                let test2 = F::from_bits(bits);
+                if test.is_nan() {
+                    assert!(test2.is_nan());
+                } else {
+                    assert!(test.bitwise_eq(test2));
+                }
+                if negative {
+                    test = test.next_down().value;
+                } else {
+                    test = test.next_up().value;
+                }
+            }
+        }
+    }
+
+    test::<Float8E5M2>();
+    test::<Float8E4M3FN>();
+    test::<Float8E5M2FNUZ>();
+    test::<Float8E4M3FNUZ>();
+    test::<Float8E4M3B11FNUZ>();
+}
+
 // HACK(eddyb) C`{FLT,DBL}_TRUE_MIN` / C++ `std::numeric_limits<T>::denorm_min`
 // equivalents, for the two tests below, as Rust seems to lack anything like them,
 // but their bit-patterns are thankfuly trivial, with the main caveat that they
