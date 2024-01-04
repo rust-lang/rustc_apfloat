@@ -576,6 +576,24 @@ impl<S: Semantics> Neg for IeeeFloat<S> {
     }
 }
 
+impl<Src: Semantics> IeeeFloat<Src> {
+    /// Returns true if any number described by `Self` can be precisely represented
+    /// by a normal (not subnormal) value in `IeeeFloat<Dst>`.
+    pub const fn is_representable_as_normal_in<Dst: Semantics>() -> bool {
+        // Exponent range must be larger.
+        if Src::MAX_EXP >= Dst::MAX_EXP || Src::MIN_EXP <= Dst::MIN_EXP {
+            return false;
+        }
+
+        // If the mantissa is long enough, the result value could still be denormal
+        // with a larger exponent range.
+        //
+        // FIXME: This condition is probably not accurate but also shouldn't be a
+        // practical concern with existing types.
+        return Dst::PRECISION >= Src::PRECISION;
+    }
+}
+
 /// Prints this value as a decimal string.
 ///
 /// \param precision The maximum number of digits of
