@@ -90,6 +90,14 @@ impl<T> StatusAnd<T> {
     }
 }
 
+impl<T: core::fmt::Debug> StatusAnd<T> {
+    /// Extract the inner value if there were no errors. If there were errors, panic.
+    pub fn unwrap(self) -> T {
+        assert_eq!(self.status, Status::OK, "called `StatusAnd::unwrap()` on an error value. Value: {:?}", self.value);
+        self.value
+    }
+}
+
 #[macro_export]
 macro_rules! unpack {
     ($status:ident|=, $e:expr) => {
