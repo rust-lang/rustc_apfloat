@@ -1,3 +1,5 @@
+//! Support for floating point types that use PowerPC semantics.
+
 use crate::ieee;
 use crate::{Category, ExpInt, Float, FloatConvert, ParseError, Round, Status, StatusAnd};
 
@@ -5,9 +7,15 @@ use core::cmp::Ordering;
 use core::fmt;
 use core::ops::Neg;
 
+/// A larger floating point number represented by two smaller floats.
 #[must_use]
 #[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
 pub struct DoubleFloat<F>(F, F);
+
+/// 128-bit floating point number comprised of two IEEE [`Double`](ieee::Double) values.
+///
+/// This is the "IBM Extended Double" format, described at
+/// <https://www.ibm.com/docs/bg/aix/7.1?topic=sepl-128-bit-long-double-floating-point-data-type>.
 pub type DoubleDouble = DoubleFloat<ieee::Double>;
 
 // These are legacy semantics for the Fallback, inaccrurate implementation of

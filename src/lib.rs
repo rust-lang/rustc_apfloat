@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! https://github.com/llvm/llvm-project/commit/462a31f5a5abb905869ea93cc49b096079b11aa4
+//! <https://github.com/llvm/llvm-project/commit/462a31f5a5abb905869ea93cc49b096079b11aa4>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -64,6 +64,8 @@ bitflags! {
     }
 }
 
+/// The result of a computation including the output value and and any exceptions if there were
+/// errors.
 #[must_use]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct StatusAnd<T> {
@@ -72,12 +74,14 @@ pub struct StatusAnd<T> {
 }
 
 impl Status {
+    /// Add a value to this status to create a [`StatusAnd`].
     pub fn and<T>(self, value: T) -> StatusAnd<T> {
         StatusAnd { status: self, value }
     }
 }
 
 impl<T> StatusAnd<T> {
+    /// Keep the existing status but apply a transformation to `value`.
     pub fn map<F: FnOnce(T) -> U, U>(self, f: F) -> StatusAnd<U> {
         StatusAnd {
             status: self.status,
@@ -145,6 +149,7 @@ pub const IEK_INF: ExpInt = ExpInt::max_value();
 pub const IEK_NAN: ExpInt = ExpInt::min_value();
 pub const IEK_ZERO: ExpInt = ExpInt::min_value() + 1;
 
+/// An error creating a floating point from a string.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct ParseError(pub &'static str);
 
@@ -590,6 +595,7 @@ pub trait Float:
     }
 }
 
+/// Convert between floating point types.
 pub trait FloatConvert<T: Float>: Float {
     /// Convert a value of one floating point type to another.
     /// The return value corresponds to the IEEE754 exceptions. *loses_info
@@ -598,6 +604,8 @@ pub trait FloatConvert<T: Float>: Float {
     /// original value (this is almost the same as return value==Status::OK,
     /// but there are edge cases where this is not so).
     fn convert_r(self, round: Round, loses_info: &mut bool) -> StatusAnd<T>;
+
+    /// Convert with default [`NearestTiesToEven`](Round::NearestTiesToEven) rounding.
     fn convert(self, loses_info: &mut bool) -> StatusAnd<T> {
         self.convert_r(Round::NearestTiesToEven, loses_info)
     }
