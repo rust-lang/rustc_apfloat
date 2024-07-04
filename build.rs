@@ -4,7 +4,7 @@ const SRC_LIB_RS_CONTENTS: &str = include_str!("src/lib.rs");
 const EXPECTED_SRC_LIB_RS_PREFIX: &str = "\
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! https://github.com/llvm/llvm-project/commit/";
+//! <https://github.com/llvm/llvm-project/commit/";
 
 fn main() {
     // HACK(eddyb) disable the default of re-running the build script on *any*
@@ -16,11 +16,14 @@ fn main() {
         .ok_or(())
         .map_err(|_| format!("expected `src/lib.rs` to start with:\n\n{EXPECTED_SRC_LIB_RS_PREFIX}"))
         .and_then(|commit_hash_plus_rest_of_file| {
-            Ok(commit_hash_plus_rest_of_file
+            commit_hash_plus_rest_of_file
                 .split_once('\n')
-                .ok_or("expected `src/lib.rs` to have more than 3 lines")?)
+                .ok_or("expected `src/lib.rs` to have more than 3 lines")?
+                .0
+                .strip_suffix(">")
+                .ok_or("expected trailing hyperlink anchor `>`".into())
         })
-        .and_then(|(commit_hash, _)| {
+        .and_then(|commit_hash| {
             if commit_hash.len() != 40 || !commit_hash.chars().all(|c| matches!(c, '0'..='9'|'a'..='f')) {
                 Err(format!("expected `src/lib.rs` to have a valid commit hash, found {commit_hash:?}"))
             } else {

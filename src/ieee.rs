@@ -1,3 +1,5 @@
+//! Support for floating point types compatible with IEEE 754.
+
 use crate::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use crate::{Float, FloatConvert, ParseError, Round, Status, StatusAnd};
 
@@ -8,6 +10,12 @@ use core::marker::PhantomData;
 use core::mem;
 use core::ops::Neg;
 
+/// A floating point number that uses IEEE semantics.
+///
+/// Usually you will want to use the available type aliases of this type
+/// (e.g., [`Single`], [`Double`]) rather than referencing it directly.
+///
+/// If `S` implements [`Semantics`], this type will implement [`Float`].
 #[must_use]
 pub struct IeeeFloat<S> {
     /// Absolute significand value (including the integer bit).
@@ -84,7 +92,7 @@ pub enum NonfiniteBehavior {
     /// Only the Float8E5M2 has this behavior. There is no Inf representation. A
     /// value is NaN if the exponent field and the mantissa field are all 1s.
     /// This behavior matches the FP8 E4M3 type described in
-    /// https://arxiv.org/abs/2209.05433. We treat both signed and unsigned NaNs
+    /// <https://arxiv.org/abs/2209.05433>. We treat both signed and unsigned NaNs
     /// as non-signalling, although the paper does not state whether the NaN
     /// values are signalling or not.
     NanOnly,
@@ -276,37 +284,59 @@ impl<S> Clone for IeeeFloat<S> {
 }
 
 macro_rules! ieee_semantics {
-    ($($name:ident = $sem:ident($bits:tt : $exp_bits:tt) $({ $($extra:tt)* })?),* $(,)?) => {
-        $(pub struct $sem;)*
-        $(pub type $name = IeeeFloat<$sem>;)*
-        $(impl Semantics for $sem {
-            const BITS: usize = $bits;
-            const EXP_BITS: usize = $exp_bits;
+    ($(
+        $(#[$meta:meta])*
+        $name:ident = $sem:ident($bits:tt : $exp_bits:tt) $({ $($extra:tt)* })?
+    ),* $(,)?) => {
+        $(
+            #[doc = concat!("Floating point semantics for [`", stringify!($name), "`].")]
+            ///
+            /// See that type for more details.
+            pub struct $sem;
 
-            $($($extra)*)?
-        })*
+            $(#[$meta])*
+            pub type $name = IeeeFloat<$sem>;
+
+            impl Semantics for $sem {
+                const BITS: usize = $bits;
+                const EXP_BITS: usize = $exp_bits;
+
+                $($($extra)*)?
+            }
+        )*
     }
 }
 
 ieee_semantics! {
+    /// IEEE binary16 half-precision (16-bit) floating point number.
     Half = HalfS(16:5),
+
+    /// IEEE binary32 single-precision (32-bit) floating point number.
     Single = SingleS(32:8),
+
+    /// IEEE binary64 double-precision (64-bit) floating point number.
     Double = DoubleS(64:11),
+
+    /// IEEE binary128 quadruple-precision (128-bit) floating point number.
     Quad = QuadS(128:15),
 
-    // Non-standard IEEE-like semantics:
-
-    // FIXME(eddyb) document this as "Brain Float 16" (C++ didn't have docs).
+    /// 16-bit brain floating point number.
+    ///
+    /// This is not an IEEE kind but uses the same semantics.
     BFloat = BFloatS(16:8),
 
-    // 8-bit floating point number following IEEE-754 conventions with bit
-    // layout S1E5M2 as described in https://arxiv.org/abs/2209.05433.
+    /// 8-bit floating point number with S1E5M2 bit layout.
+    ///
+    /// Follows IEEE-754 conventions with S1E5M2 bit layout as described in
+    /// <https://arxiv.org/abs/2209.05433>.
     Float8E5M2 = Float8E5M2S(8:5),
 
-    // 8-bit floating point number mostly following IEEE-754 conventions with
-    // bit layout S1E4M3 as described in https://arxiv.org/abs/2209.05433.
-    // Unlike IEEE-754 types, there are no infinity values, and NaN is
-    // represented with the exponent and mantissa bits set to all 1s.
+    /// 8-bit floating point number with S1E4M3 bit layout.
+    ///
+    /// This type mostly follows IEEE-754 conventions with a
+    /// bit layout S1E4M3 as described in <https://arxiv.org/abs/2209.05433>.
+    /// Unlike IEEE-754 types, there are no infinity values, and NaN is
+    /// represented with the exponent and mantissa bits set to all 1s.
     Float8E4M3FN = Float8E4M3FNS(8:4) {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
     },
@@ -314,8 +344,15 @@ ieee_semantics! {
 
 // FIXME(eddyb) consider moving X87-specific logic to a "has explicit integer bit"
 // associated `const` on `Semantics` itself.
+/// Floating point semantics for [`X87DoubleExtended`].
+///
+/// See that type for more details.
 pub struct X87DoubleExtendedS;
+
+/// 80-bit floating point number that uses IEEE extended precision semantics, as used
+/// by x87 `long double`.
 pub type X87DoubleExtended = IeeeFloat<X87DoubleExtendedS>;
+
 impl Semantics for X87DoubleExtendedS {
     const BITS: usize = 80;
     const EXP_BITS: usize = 15;
