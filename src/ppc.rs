@@ -15,7 +15,7 @@ pub struct DoubleFloat<F>(F, F);
 /// 128-bit floating point number comprised of two IEEE [`Double`](ieee::Double) values.
 ///
 /// This is the "IBM Extended Double" format, described at
-/// <https://www.ibm.com/docs/bg/aix/7.1?topic=sepl-128-bit-long-double-floating-point-data-type>.
+/// <https://www.ibm.com/docs/en/aix/7.3?topic=sepl-128-bit-long-double-floating-point-data-type>.
 pub type DoubleDouble = DoubleFloat<ieee::Double>;
 
 // These are legacy semantics for the Fallback, inaccrurate implementation of

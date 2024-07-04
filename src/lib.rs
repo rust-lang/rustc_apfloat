@@ -64,8 +64,7 @@ bitflags! {
     }
 }
 
-/// The result of a computation including the output value and and any exceptions if there were
-/// errors.
+/// The result of a computation consisting of the output value and the exceptions, if any.
 #[must_use]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct StatusAnd<T> {
@@ -157,7 +156,7 @@ pub const IEK_INF: ExpInt = ExpInt::max_value();
 pub const IEK_NAN: ExpInt = ExpInt::min_value();
 pub const IEK_ZERO: ExpInt = ExpInt::min_value() + 1;
 
-/// An error creating a floating point from a string.
+/// An error which can occur when parsing a floating point number from a string.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct ParseError(pub &'static str);
 

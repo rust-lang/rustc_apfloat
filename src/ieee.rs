@@ -12,8 +12,8 @@ use core::ops::Neg;
 
 /// A floating point number that uses IEEE semantics.
 ///
-/// Usually you will want the type aliases ([`Single`], [`Double`], ...) rather than using this
-/// directly.
+/// Usually you will want to use the available type aliases of this type
+/// (e.g., [`Single`], [`Double`]) rather than referencing it directly.
 ///
 /// If `S` implements [`Semantics`], this type will implement [`Float`].
 #[must_use]
@@ -344,7 +344,7 @@ ieee_semantics! {
 
 // FIXME(eddyb) consider moving X87-specific logic to a "has explicit integer bit"
 // associated `const` on `Semantics` itself.
-/// Floating point semantics for [`X87DoubleExtended`]
+/// Floating point semantics for [`X87DoubleExtended`].
 ///
 /// See that type for more details.
 pub struct X87DoubleExtendedS;
