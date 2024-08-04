@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-afl = "0.12.16"
+afl = "0.15.10"
 clap = { version = "4.1.13", features = ["derive"] }
 num-traits = "0.2.15"
 rustc_apfloat = { path = ".." }
