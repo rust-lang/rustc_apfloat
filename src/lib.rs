@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/462a31f5a5abb905869ea93cc49b096079b11aa4>
+//! <https://github.com/llvm/llvm-project/commit/55c2211a233e11179048cf58778f40e5a62f444a>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -274,6 +274,16 @@ pub trait Float:
     /// NaN (Not a Number).
     // FIXME(eddyb) provide a default when qnan becomes const fn.
     const NAN: Self;
+
+    /// Number of bits needed to represent the largest integer that
+    /// the floating point type can hold.
+    // FIXME should be const fn.
+    fn max_int_bits(signed: bool) -> usize {
+        // The max FP value is pow(2, MaxExponent) * (1 + MaxFraction), so we need
+        // at least one more bit than the MaxExponent to hold the max FP value.
+        // Another extra sign bit is needed for signed integers.
+        Self::MAX_EXP as usize + 1 + (signed as usize)
+    }
 
     /// Factory for QNaN values.
     // FIXME(eddyb) should be const fn.
@@ -571,6 +581,9 @@ pub trait Float:
         }
         self.round_to_integral(Round::TowardZero).value.bitwise_eq(self)
     }
+
+    /// If the value is a signaling NaN, makes it quiet
+    fn make_quiet(self) -> Self;
 
     /// If this value has an exact multiplicative inverse, return it.
     fn get_exact_inverse(self) -> Option<Self>;
