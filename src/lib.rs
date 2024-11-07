@@ -54,6 +54,7 @@ bitflags! {
     ///    result of an operation that signals the invalid operation exception
     ///    shall be a quiet NaN."
     #[must_use]
+    #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct Status: u8 {
         const OK = 0x00;
         const INVALID_OP = 0x01;
