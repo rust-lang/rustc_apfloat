@@ -36,7 +36,7 @@ fn main() {
         });
 
     let expected_version_metadata = format!("+llvm-{}", &llvm_commit_hash[..12]);
-    let actual_version = env!("CARGO_PKG_VERSION");
+    let actual_version = std::env::var("CARGO_PKG_VERSION").expect("no CARGO_PKG_VERSION in env");
     if !actual_version.ends_with(&expected_version_metadata) {
         eprintln!("\nexpected version ending in `{expected_version_metadata}`, found `{actual_version}`\n");
         panic!("failed to validate Cargo package version (see above)");
