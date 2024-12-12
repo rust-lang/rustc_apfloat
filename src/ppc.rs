@@ -18,7 +18,7 @@ pub struct DoubleFloat<F>(F, F);
 /// <https://www.ibm.com/docs/en/aix/7.3?topic=sepl-128-bit-long-double-floating-point-data-type>.
 pub type DoubleDouble = DoubleFloat<ieee::Double>;
 
-// These are legacy semantics for the Fallback, inaccrurate implementation of
+// These are legacy semantics for the Fallback, inaccurate implementation of
 // IBM double-double, if the accurate DoubleDouble doesn't handle the
 // operation. It's equivalent to having an IEEE number with consecutive 106
 // bits of mantissa and 11 bits of exponent.
