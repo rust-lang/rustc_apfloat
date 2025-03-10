@@ -2051,7 +2051,8 @@ impl<S: Semantics> IeeeFloat<S> {
         // Before rounding normalize the exponent of Category::Normal numbers.
         let mut omsb = sig::omsb(&self.sig);
 
-        if omsb > 0 {
+        // Only skip this `if` if the value is exactly zero.
+        if omsb > 0 || loss != Loss::ExactlyZero {
             // OMSB is numbered from 1. We want to place it in the integer
             // bit numbered PRECISION if possible, with a compensating change in
             // the exponent.
@@ -3008,37 +3009,60 @@ mod sig {
         // an addition or subtraction.
         // Subtraction is more subtle than one might naively expect.
         if *a_sign ^ b_sign {
-            let loss;
-
-            if bits == 0 {
-                loss = Loss::ExactlyZero;
+            let (mut loss, loss_is_from_b) = if bits == 0 {
+                (Loss::ExactlyZero, false)
             } else if bits > 0 {
-                loss = shift_right(b_sig, &mut 0, (bits - 1) as usize);
                 shift_left(a_sig, a_exp, 1);
+                (shift_right(b_sig, &mut 0, (bits - 1) as usize), true)
             } else {
-                loss = shift_right(a_sig, a_exp, (-bits - 1) as usize);
                 shift_left(b_sig, &mut 0, 1);
-            }
+                (shift_right(a_sig, a_exp, (-bits - 1) as usize), false)
+            };
 
-            let borrow = (loss != Loss::ExactlyZero) as Limb;
-
-            // Should we reverse the subtraction.
-            if cmp(a_sig, b_sig) == Ordering::Less {
-                // The code above is intended to ensure that no borrow is necessary.
-                assert_eq!(sub(b_sig, a_sig, borrow), 0);
-                a_sig.copy_from_slice(b_sig);
-                *a_sign = !*a_sign;
-            } else {
-                // The code above is intended to ensure that no borrow is necessary.
-                assert_eq!(sub(a_sig, b_sig, borrow), 0);
-            }
-
-            // Invert the lost fraction - it was on the RHS and subtracted.
-            match loss {
+            let invert_loss = |loss| match loss {
                 Loss::LessThanHalf => Loss::MoreThanHalf,
                 Loss::MoreThanHalf => Loss::LessThanHalf,
                 _ => loss,
+            };
+
+            // Should we reverse the subtraction.
+            match cmp(a_sig, b_sig) {
+                Ordering::Less => {
+                    let borrow = if loss != Loss::ExactlyZero && !loss_is_from_b {
+                        // The loss is being subtracted, borrow from the significand and invert
+                        // `loss`.
+                        loss = invert_loss(loss);
+                        1
+                    } else {
+                        0
+                    };
+                    // The code above is intended to ensure that no borrow is necessary.
+                    assert_eq!(sub(b_sig, a_sig, borrow), 0);
+                    a_sig.copy_from_slice(b_sig);
+                    *a_sign = !*a_sign;
+                }
+                Ordering::Greater => {
+                    let borrow = if loss != Loss::ExactlyZero && loss_is_from_b {
+                        // The loss is being subtracted, borrow from the significand and invert
+                        // `loss`.
+                        loss = invert_loss(loss);
+                        1
+                    } else {
+                        0
+                    };
+                    // The code above is intended to ensure that no borrow is necessary.
+                    assert_eq!(sub(a_sig, b_sig, borrow), 0);
+                }
+                Ordering::Equal => {
+                    a_sig.fill(0);
+                    if loss != Loss::ExactlyZero && loss_is_from_b {
+                        // b is slightly larger due to the loss, flip the sign.
+                        *a_sign = !*a_sign;
+                    }
+                }
             }
+
+            loss
         } else {
             let loss = if bits > 0 {
                 shift_right(b_sig, &mut 0, bits as usize)
@@ -3049,6 +3073,69 @@ mod sig {
             assert_eq!(add(a_sig, b_sig, 0), 0);
             loss
         }
+    }
+
+    #[test]
+    fn test_add_or_sub() {
+        #[track_caller]
+        fn run_test(
+            subtract: bool,
+            mut lhs_sign: bool,
+            mut lhs_exponent: ExpInt,
+            mut lhs_significand: Limb,
+            rhs_sign: bool,
+            rhs_exponent: ExpInt,
+            mut rhs_significand: Limb,
+            expected_sign: bool,
+            expected_exponent: ExpInt,
+            expected_significand: Limb,
+            expected_loss: Loss,
+        ) {
+            let loss = add_or_sub(
+                core::array::from_mut(&mut lhs_significand),
+                &mut lhs_exponent,
+                &mut lhs_sign,
+                core::array::from_mut(&mut rhs_significand),
+                rhs_exponent,
+                rhs_sign ^ subtract,
+            );
+            assert_eq!(loss, expected_loss);
+            assert_eq!(lhs_sign, expected_sign);
+            assert_eq!(lhs_exponent, expected_exponent);
+            assert_eq!(lhs_significand, expected_significand);
+        }
+
+        // Test cases are all combinations of:
+        // {equal exponents, LHS larger exponent, RHS larger exponent}
+        // {equal significands, LHS larger significand, RHS larger significand}
+        // {no loss, loss}
+
+        // Equal exponents (loss cannot occur as their is no shifting)
+        run_test(true, false, 1, 0x10, false, 1, 0x5, false, 1, 0xb, Loss::ExactlyZero);
+        run_test(false, false, -2, 0x20, true, -2, 0x20, false, -2, 0, Loss::ExactlyZero);
+        run_test(false, true, 3, 0x20, false, 3, 0x30, false, 3, 0x10, Loss::ExactlyZero);
+
+        // LHS larger exponent
+        // LHS significand greater after shitfing
+        run_test(true, false, 7, 0x100, false, 3, 0x100, false, 6, 0x1e0, Loss::ExactlyZero);
+        run_test(true, false, 7, 0x100, false, 3, 0x101, false, 6, 0x1df, Loss::MoreThanHalf);
+        // Significands equal after shitfing
+        run_test(true, false, 7, 0x100, false, 3, 0x1000, false, 6, 0, Loss::ExactlyZero);
+        run_test(true, false, 7, 0x100, false, 3, 0x1001, true, 6, 0, Loss::LessThanHalf);
+        // RHS significand greater after shitfing
+        run_test(true, false, 7, 0x100, false, 3, 0x10000, true, 6, 0x1e00, Loss::ExactlyZero);
+        run_test(true, false, 7, 0x100, false, 3, 0x10001, true, 6, 0x1e00, Loss::LessThanHalf);
+
+        // RHS larger exponent
+        // RHS significand greater after shitfing
+        run_test(true, false, 3, 0x100, false, 7, 0x100, true, 6, 0x1e0, Loss::ExactlyZero);
+        run_test(true, false, 3, 0x101, false, 7, 0x100, true, 6, 0x1df, Loss::MoreThanHalf);
+        // Significands equal after shitfing
+        run_test(true, false, 3, 0x1000, false, 7, 0x100, false, 6, 0, Loss::ExactlyZero);
+        run_test(true, false, 3, 0x1001, false, 7, 0x100, false, 6, 0, Loss::LessThanHalf);
+        // LHS significand greater after shitfing
+        run_test(true, false, 3, 0x10000, false, 7, 0x100, false, 6, 0x1e00, Loss::ExactlyZero);
+        run_test(true, false, 3, 0x10001, false, 7, 0x100, false, 6, 0x1e00, Loss::LessThanHalf);
     }
 
     /// `[low, high] = a * b`.
