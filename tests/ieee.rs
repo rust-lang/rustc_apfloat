@@ -635,6 +635,101 @@ fn fma() {
         assert_eq!(-8.85242279E-41, f1.to_f32());
     }
 
+    // `sig::add_or_sub` can be considered to have 9 possible cases
+    // when subtracting: all combinations of `Ordering::{Less, Greater, Equal} and
+    // {no loss, loss from lhs, loss from rhs}. Test each reachable case here.
+
+    // Regression test for failing the assertions in `sig::add_or_sub` and normalizing
+    // the exponent even when the significand is zero if there is a lost fraction.
+    // This tests `Ordering::Equal`, loss from lhs
+    {
+        let mut f1 = Single::from_f32(-1.4728589E-38);
+        let f2 = Single::from_f32(3.7105144E-6);
+        let f3 = Single::from_f32(5.5E-44);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(-0.0, f1.to_f32());
+    }
+
+    // Test `Ordering::Greater`, no loss
+    {
+        let mut f1 = Single::from_f32(2.0);
+        let f2 = Single::from_f32(2.0);
+        let f3 = Single::from_f32(-3.5);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(0.5, f1.to_f32());
+    }
+
+    // Test `Ordering::Less`, no loss
+    {
+        let mut f1 = Single::from_f32(2.0);
+        let f2 = Single::from_f32(2.0);
+        let f3 = Single::from_f32(-4.5);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(-0.5, f1.to_f32());
+    }
+
+    // Test `Ordering::Equal`, no loss
+    {
+        let mut f1 = Single::from_f32(2.0);
+        let f2 = Single::from_f32(2.0);
+        let f3 = Single::from_f32(-4.0);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(0.0, f1.to_f32());
+    }
+
+    // Test `Ordering::Less`, loss from lhs
+    {
+        let mut f1 = Single::from_f32(2.0000002);
+        let f2 = Single::from_f32(2.0000002);
+        let f3 = Single::from_f32(-32.0);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(-27.999998, f1.to_f32());
+    }
+
+    // Test `Ordering::Greater`, loss from rhs
+    {
+        let mut f1 = Single::from_f32(1e10);
+        let f2 = Single::from_f32(1e10);
+        let f3 = Single::from_f32(-2.0000002);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(1e20, f1.to_f32());
+    }
+
+    // Test `Ordering::Greater`, loss from lhs
+    {
+        let mut f1 = Single::from_f32(1e-36);
+        let f2 = Single::from_f32(0.0019531252);
+        let f3 = Single::from_f32(-1e-45);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(1.953124e-39, f1.to_f32());
+    }
+
+    // `Ordering::{Equal, Less}` with loss from rhs can't occur for the usage in
+    // `mul_add` as `mul_add_r` normalises the MSB of lhs to one bit below the top.
+
+    // Test cases from llvm/llvm-project#104984
+    {
+        let mut f1 = Single::from_f32(0.24999998);
+        let f2 = Single::from_f32(2.3509885e-38);
+        let f3 = Single::from_f32(-1e-45);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(5.87747e-39, f1.to_f32());
+    }
+    {
+        let mut f1 = Single::from_f32(4.4501477170144023e-308);
+        let f2 = Single::from_f32(0.24999999999999997);
+        let f3 = Single::from_f32(-8.475904604373977e-309);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(2.64946468816203e-309, f1.to_f32());
+    }
+    {
+        let mut f1 = Half::from_bits(0x8fff);
+        let f2 = Half::from_bits(0x2bff);
+        let f3 = Half::from_bits(0x0172);
+        f1 = f1.mul_add(f2, f3).value;
+        assert_eq!(0x808e, f1.to_bits());
+    }
+
     // Test using only a single instance of APFloat.
     {
         let mut f = Double::from_f64(1.5);
