@@ -412,8 +412,10 @@ pub trait Float:
 
     // IEEE-754R 5.7.2 General operations.
 
-    /// Implements IEEE minNum semantics. Returns the smaller of the 2 arguments if
-    /// both are not NaN. If either argument is a NaN, returns the other argument.
+    /// Implements IEEE 754-2008 `minNum` with the SNaN handling of IEEE 754-2019 `minimumNumber`.
+    /// Returns the smaller of the 2 arguments if both are not NaN. If either argument is a NaN,
+    /// returns the other argument. If both arguments are equal (in particular, if one is `-0.0` and
+    /// `+0.0`), no guarantee is made about which one is returned.
     fn min(self, other: Self) -> Self {
         if self.is_nan() {
             other
@@ -426,8 +428,10 @@ pub trait Float:
         }
     }
 
-    /// Implements IEEE maxNum semantics. Returns the larger of the 2 arguments if
-    /// both are not NaN. If either argument is a NaN, returns the other argument.
+    /// Implements IEEE 754-2008 `maxNum` with the SNaN handling of IEEE 754-2019 `maximumNumber`.
+    /// Returns the larger of the 2 arguments if both are not NaN. If either argument is a NaN,
+    /// returns the other argument. If both arguments are equal (in particular, if one is `-0.0` and
+    /// `+0.0`), no guarantee is made about which one is returned.
     fn max(self, other: Self) -> Self {
         if self.is_nan() {
             other
@@ -440,7 +444,7 @@ pub trait Float:
         }
     }
 
-    /// Implements IEEE 754-2018 minimum semantics. Returns the smaller of 2
+    /// Implements IEEE 754-2019 `minimum` semantics. Returns the smaller of 2
     /// arguments, propagating NaNs and treating -0 as less than +0.
     fn minimum(self, other: Self) -> Self {
         if self.is_nan() {
@@ -460,7 +464,7 @@ pub trait Float:
         }
     }
 
-    /// Implements IEEE 754-2018 maximum semantics. Returns the larger of 2
+    /// Implements IEEE 754-2019 `maximum` semantics. Returns the larger of 2
     /// arguments, propagating NaNs and treating -0 as less than +0.
     fn maximum(self, other: Self) -> Self {
         if self.is_nan() {
