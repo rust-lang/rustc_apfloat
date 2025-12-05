@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4+llvm-462a31f5a5ab](https://github.com/rust-lang/rustc_apfloat/compare/rustc_apfloat-v0.2.3+llvm-462a31f5a5ab...rustc_apfloat-v0.2.4+llvm-462a31f5a5ab) - 2025-12-05
+
+### Other
+
+- clarify comments for min/max operations
+
 ## [0.2.3+llvm-462a31f5a5ab](https://github.com/rust-lang/rustc_apfloat/compare/rustc_apfloat-v0.2.2+llvm-462a31f5a5ab...rustc_apfloat-v0.2.3+llvm-462a31f5a5ab) - 2025-06-11
 
 ### Other
