@@ -365,6 +365,11 @@ where
         Fallback::from(self).next_up().map(Self::from)
     }
 
+    #[allow(unused_variables)]
+    fn sqrt(self, round: Round) -> StatusAnd<Self> {
+        unimplemented!()
+    }
+
     fn from_bits(input: u128) -> Self {
         let (a, b) = (input, input >> F::BITS);
         DoubleFloat(F::from_bits(a & ((1 << F::BITS) - 1)), F::from_bits(b & ((1 << F::BITS) - 1)))

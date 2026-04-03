@@ -1,7 +1,7 @@
 //! Tests added to `rustc_apfloat`, that were not ported from the C++ code.
 
-use rustc_apfloat::ieee::{Double, Single, X87DoubleExtended};
-use rustc_apfloat::Float;
+use rustc_apfloat::ieee::{BFloat, Double, Float8E4M3FN, Float8E5M2, Half, Quad, Single, X87DoubleExtended};
+use rustc_apfloat::{Float, Round, Status, StatusAnd};
 
 // `f32 -> i128 -> f32` previously-crashing bit-patterns (found by fuzzing).
 pub const FUZZ_IEEE32_ROUNDTRIP_THROUGH_I128_CASES: &[u32] = &[
@@ -406,5 +406,407 @@ pub const FUZZ_X87_F80_NEG_CASES_WITH_EXPECTED_OUTPUTS: &[(u128, u128)] = &[
 fn fuzz_x87_f80_neg_with_expected_outputs() {
     for &(bits, expected_bits) in FUZZ_X87_F80_NEG_CASES_WITH_EXPECTED_OUTPUTS {
         assert_eq!((-X87DoubleExtended::from_bits(bits)).to_bits(), expected_bits);
+    }
+}
+
+macro_rules! for_each_ieee_float_type {
+    (for<$ty_var:ident: Float> $e:expr) => {{
+        {
+            type $ty_var = Half;
+            $e;
+        }
+        {
+            type $ty_var = Single;
+            $e;
+        }
+        {
+            type $ty_var = Double;
+            $e;
+        }
+        {
+            type $ty_var = Quad;
+            $e;
+        }
+        {
+            type $ty_var = BFloat;
+            $e;
+        }
+        {
+            type $ty_var = Float8E5M2;
+            $e;
+        }
+        {
+            type $ty_var = Float8E4M3FN;
+            $e;
+        }
+        {
+            type $ty_var = X87DoubleExtended;
+            $e;
+        }
+    }};
+}
+
+#[test]
+fn sqrt() {
+    for_each_ieee_float_type!(for<F: Float> test::<F>());
+    fn test<F: Float>() {
+        for round in [
+            Round::NearestTiesToEven,
+            Round::TowardPositive,
+            Round::TowardNegative,
+            Round::TowardZero,
+        ] {
+            assert!(F::ZERO.sqrt(round).value.bitwise_eq(F::ZERO));
+            assert!((-F::ZERO).sqrt(round).value.bitwise_eq(-F::ZERO));
+            assert!(F::INFINITY.sqrt(round).value.bitwise_eq(F::INFINITY));
+            assert!(F::NAN.sqrt(round).value.is_nan());
+            assert!((-F::INFINITY).sqrt(round).value.is_nan());
+            assert!((-F::from_u128(5).value).sqrt(round).value.is_nan());
+            let one = F::from_u128(1).value;
+            assert!(one.sqrt(round).value.bitwise_eq(one));
+            let f1 = F::from_u128(64).value;
+            let f2 = F::from_u128(8).value;
+            assert!(f1.sqrt(round).value.bitwise_eq(f2));
+        }
+    }
+}
+
+#[test]
+fn fuzz_sqrt() {
+    // for round in [
+    //     Round::NearestTiesToEven,
+    //     Round::TowardPositive,
+    //     Round::TowardNegative,
+    //     Round::TowardZero,
+    // ] {
+    //     println!("checking rounding mode {round:?}");
+
+    //     for xi in 0..=u16::MAX {
+    //         if xi % 1_000 == 0 {
+    //             println!("{xi}/{}", u16::MAX);
+    //         }
+    //         let x = f16::from_bits(xi);
+    //         let a = apfloat_sqrtf16(x, round);
+    //         let b = hardware_sqrt::sqrtf16(x, round);
+
+    //         // x86 preserves the sign on NaN inputs, others may not (e.g. aarch64 does not).
+    //         let eq_value = if cfg!(target_arch = "x86_64") {
+    //             a.value.bitwise_eq(b.value)
+    //         } else {
+    //             a.value.bitwise_eq(b.value) || (a.value.is_nan() && b.value.is_nan())
+    //         };
+
+    //         if a.status != b.status || !eq_value {
+    //             panic!(
+    //                 "\
+    //                 incorrect result\n\
+    //                 xi: {xi:#010x}\n\
+    //                 x: {x:?}\n\
+    //                 a: {a:?} {af}\n\
+    //                 b: {b:?} {bf}\
+    //                 ",
+    //                 af = f32::from_bits(a.value.to_bits().try_into().unwrap()),
+    //                 bf = f32::from_bits(a.value.to_bits().try_into().unwrap()),
+    //             );
+    //         }
+    //     }
+    // }
+
+    for round in [
+        Round::NearestTiesToEven,
+        Round::TowardPositive,
+        Round::TowardNegative,
+        Round::TowardZero,
+    ] {
+        println!("checking rounding mode {round:?}");
+
+        for xi in 0..=u32::MAX {
+            if xi % 100_000_000 == 0 {
+                println!("{xi}/{}", u32::MAX);
+            }
+            let x = f32::from_bits(xi);
+            let a = apfloat_sqrt(x, round);
+            let b = hardware_sqrt::sqrtf32(x, round);
+
+            // x86 preserves the sign on NaN inputs, others may not (e.g. aarch64 does not).
+            let eq_value = if cfg!(target_arch = "x86_64") {
+                a.value.bitwise_eq(b.value)
+            } else {
+                a.value.bitwise_eq(b.value) || (a.value.is_nan() && b.value.is_nan())
+            };
+
+            if a.status != b.status || !eq_value {
+                panic!(
+                    "\
+                    incorrect result\n\
+                    xi: {xi:#010x}\n\
+                    x: {x:?}\n\
+                    a: {a:?} {af}\n\
+                    b: {b:?} {bf}\
+                    ",
+                    af = f32::from_bits(a.value.to_bits().try_into().unwrap()),
+                    bf = f32::from_bits(a.value.to_bits().try_into().unwrap()),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn apfloat_sqrtf16(x: f16, round: Round) -> StatusAnd<Half> {
+    Half::from_bits(x.to_bits().into()).sqrt(round)
+}
+
+fn apfloat_sqrt(x: f32, round: Round) -> StatusAnd<Single> {
+    Single::from_bits(x.to_bits().into()).sqrt(round)
+}
+
+// SQRTSS is in baseline SSE, SQRTSD needs SSE2
+#[cfg(any(target_arch = "x86_64", all(target_arch = "x86", target_feature = "sse2")))]
+mod hardware_sqrt {
+    use super::*;
+
+    pub fn sqrtf32(mut x: f32, round: Round) -> StatusAnd<Single> {
+        let mut csr_stash = 0u32;
+        let mut csr = make_mxcsr_cw(round);
+
+        unsafe {
+            core::arch::asm!(
+                // stash the current control state
+                "stmxcsr [{csr_stash}]",
+                // set the control state we want, clears flags
+                "ldmxcsr [{csr}]",
+                // run sqrt
+                "sqrtss {x}, {x}",
+                // get the new control state
+                "stmxcsr [{csr}]",
+                // restore the original control state
+                "ldmxcsr [{csr_stash}]",
+                csr_stash = in(reg) &mut csr_stash,
+                csr = in(reg) &mut csr,
+                x = inout(xmm_reg) x,
+                options(nostack),
+            );
+        }
+
+        let status = check_exceptions(csr);
+        status.and(Single::from_bits(x.to_bits().into()))
+    }
+
+    #[allow(dead_code)]
+    pub fn sqrtf64(mut x: f64, round: Round) -> StatusAnd<Double> {
+        let mut csr_stash = 0u32;
+        let mut csr = make_mxcsr_cw(round);
+
+        unsafe {
+            core::arch::asm!(
+                // stash the current control state
+                "stmxcsr [{csr_stash}]",
+                // set the control state we want, clears flags
+                "ldmxcsr [{csr}]",
+                // run sqrt
+                "sqrtsd {x}, {x}",
+                // get the new control state
+                "stmxcsr [{csr}]",
+                // restore the original control state
+                "ldmxcsr [{csr_stash}]",
+                csr_stash = in(reg) &mut csr_stash,
+                csr = in(reg) &mut csr,
+                x = inout(xmm_reg) x,
+                options(nostack),
+            );
+        }
+
+        let status = check_exceptions(csr);
+        status.and(Double::from_bits(x.to_bits().into()))
+    }
+
+    fn make_mxcsr_cw(round: Round) -> u32 {
+        // Default: Clear exception flags, no DAZ, no FTZ
+        let mut csr = 0u32;
+        // Set all masks so fp status doesn't turn into SIGFPE
+        csr |= 0b111111 << 7;
+
+        let rc = match round {
+            Round::NearestTiesToEven => 0b00,
+            Round::TowardPositive => 0b10,
+            Round::TowardNegative => 0b01,
+            Round::TowardZero => 0b11,
+            Round::NearestTiesToAway => unimplemented!("unsupported rounding on x86"),
+        };
+
+        csr |= rc << 13;
+        csr
+    }
+
+    fn check_exceptions(csr: u32) -> Status {
+        let mut status = Status::OK;
+
+        if csr & (1 << 0) != 0 {
+            status |= Status::INVALID_OP;
+        }
+        if csr & (1 << 1) != 0 {
+            // denormal flag, not part of status
+        }
+        if csr & (1 << 2) != 0 {
+            status |= Status::DIV_BY_ZERO;
+        }
+        if csr & (1 << 3) != 0 {
+            status |= Status::OVERFLOW;
+        }
+        if csr & (1 << 4) != 0 {
+            status |= Status::UNDERFLOW;
+        }
+        if csr & (1 << 5) != 0 {
+            status |= Status::INEXACT;
+        }
+
+        status
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod hardware_sqrt {
+    use super::*;
+
+    #[cfg(target_feature = "fp16")]
+    pub fn sqrtf16(mut x: f16, round: Round) -> StatusAnd<Half> {
+        let fpcr = make_fpcr_cw(round);
+        let fpsr: u64;
+
+        unsafe {
+            core::arch::asm!(
+                // stash the current control and status state
+                "mrs {fpcr_stash}, fpcr",
+                "mrs {fpsr_stash}, fpsr",
+                // zero the exception flags, set desired control state
+                "and {tmp}, {fpsr_stash}, #{CLEAR}",
+                "msr fpsr,  {tmp}",
+                "msr fpcr,  {fpcr}",
+                // run sqrt
+                "fsqrt {x:h}, {x:h}",
+                // get the status word
+                "mrs {fpcr}, fpsr",
+                // restore the original control and exception state
+                "msr fpcr, {fpcr_stash}",
+                "msr fpsr, {fpsr_stash}",
+                fpsr_stash = out(reg) _,
+                fpcr_stash = out(reg) _,
+                tmp = out(reg) _,
+                fpcr = inout(reg) fpcr => fpsr,
+                x = inout(vreg) x,
+                CLEAR = const !0x1f_u64, //
+                options(nomem, nostack),
+            );
+        }
+        let status = check_exceptions(fpsr);
+        status.and(Half::from_bits(x.to_bits().into()))
+    }
+
+    pub fn sqrtf32(mut x: f32, round: Round) -> StatusAnd<Single> {
+        let fpcr = make_fpcr_cw(round);
+        let fpsr: u64;
+
+        unsafe {
+            core::arch::asm!(
+                // stash the current control and status state
+                "mrs {fpcr_stash}, fpcr",
+                "mrs {fpsr_stash}, fpsr",
+                // zero the exception flags, set desired control state
+                "and {tmp}, {fpsr_stash}, #{CLEAR}",
+                "msr fpsr,  {tmp}",
+                "msr fpcr,  {fpcr}",
+                // run sqrt
+                "fsqrt {x:s}, {x:s}",
+                // get the status word
+                "mrs {fpcr}, fpsr",
+                // restore the original control and exception state
+                "msr fpcr, {fpcr_stash}",
+                "msr fpsr, {fpsr_stash}",
+                fpsr_stash = out(reg) _,
+                fpcr_stash = out(reg) _,
+                tmp = out(reg) _,
+                fpcr = inout(reg) fpcr => fpsr,
+                x = inout(vreg) x,
+                CLEAR = const !0x1f_u64, //
+                options(nomem, nostack),
+            );
+        }
+        let status = check_exceptions(fpsr);
+        status.and(Single::from_bits(x.to_bits().into()))
+    }
+
+    pub fn sqrtf64(mut x: f64, round: Round) -> StatusAnd<Double> {
+        let fpcr = make_fpcr_cw(round);
+        let fpsr: u64;
+
+        unsafe {
+            core::arch::asm!(
+                // stash the current control and status state
+                "mrs {fpcr_stash}, fpcr",
+                "mrs {fpsr_stash}, fpsr",
+                // zero the exception flags, set desired control state
+                "and {tmp}, {fpsr_stash}, #{CLEAR}",
+                "msr fpsr,  {tmp}",
+                "msr fpcr,  {fpcr}",
+                // run sqrt
+                "fsqrt {x:d}, {x:d}",
+                // get the status word
+                "mrs {fpcr}, fpsr",
+                // restore the original control and exception state
+                "msr fpcr, {fpcr_stash}",
+                "msr fpsr, {fpsr_stash}",
+                fpsr_stash = out(reg) _,
+                fpcr_stash = out(reg) _,
+                tmp = out(reg) _,
+                fpcr = inout(reg) fpcr => fpsr,
+                x = inout(vreg) x,
+                CLEAR = const !0x1f_u64, //
+                options(nomem, nostack),
+            );
+        }
+        let status = check_exceptions(fpsr);
+        status.and(Double::from_bits(x.to_bits().into()))
+    }
+
+    fn make_fpcr_cw(round: Round) -> u64 {
+        // Default: Clear exception flags, no DAZ, no FTZ
+        let mut csr = 0u64;
+
+        // Disable traps on all 5 floating point exceptions
+        csr |= 0b11111 << 8;
+
+        let rc = match round {
+            Round::NearestTiesToEven => 0b00,
+            Round::TowardPositive => 0b01,
+            Round::TowardNegative => 0b10,
+            Round::TowardZero => 0b11,
+            Round::NearestTiesToAway => unimplemented!("unsupported rounding on aarch64"),
+        };
+
+        csr |= rc << 22;
+        csr
+    }
+
+    fn check_exceptions(fpcr: u64) -> Status {
+        let mut status = Status::OK;
+
+        if fpcr & (1 << 0) != 0 {
+            status |= Status::INVALID_OP;
+        }
+        if fpcr & (1 << 1) != 0 {
+            status |= Status::DIV_BY_ZERO;
+        }
+        if fpcr & (1 << 2) != 0 {
+            status |= Status::OVERFLOW;
+        }
+        if fpcr & (1 << 3) != 0 {
+            status |= Status::UNDERFLOW;
+        }
+        if fpcr & (1 << 4) != 0 {
+            status |= Status::INEXACT;
+        }
+
+        status
     }
 }
