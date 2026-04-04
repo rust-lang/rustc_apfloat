@@ -14,4 +14,7 @@ rustc_apfloat = { path = ".." }
 unexpected_cfgs = { level = "warn", check-cfg = [
     # Set by the fuzzer
     'cfg(fuzzing)',
+    # Unstable configs
+    'cfg(target_has_reliable_f16)',
+    'cfg(target_has_reliable_f128)',
 ] }

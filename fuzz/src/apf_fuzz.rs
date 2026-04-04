@@ -73,6 +73,70 @@ impl<T> FuzzOp<T> {
     }
 }
 
+/// A testable operation, which can be encoded as a byte.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Op {
+    Neg = 0,
+    Add = 1,
+    Sub = 2,
+    Mul = 3,
+    Div = 4,
+    Rem = 5,
+    MulAdd = 6,
+    FToI128ToF = 7,
+    FToU128ToF = 8,
+    FToSingleToF = 9,
+    FToDoubleToF = 10,
+}
+
+impl Op {
+    pub fn from_u8(tag: u8) -> Option<Self> {
+        let v = match tag {
+            x if x == Self::Neg.to_u8() => Self::Neg,
+            x if x == Self::Add.to_u8() => Self::Add,
+            x if x == Self::Sub.to_u8() => Self::Sub,
+            x if x == Self::Mul.to_u8() => Self::Mul,
+            x if x == Self::Div.to_u8() => Self::Div,
+            x if x == Self::Rem.to_u8() => Self::Rem,
+            x if x == Self::MulAdd.to_u8() => Self::MulAdd,
+            x if x == Self::FToI128ToF.to_u8() => Self::FToI128ToF,
+            x if x == Self::FToU128ToF.to_u8() => Self::FToU128ToF,
+            x if x == Self::FToSingleToF.to_u8() => Self::FToSingleToF,
+            x if x == Self::FToDoubleToF.to_u8() => Self::FToDoubleToF,
+            _ => return None,
+        };
+        Some(v)
+    }
+
+    pub fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn airity(self) -> Arity {
+        match self {
+            Op::Neg => Arity::Unary,
+            Op::Add => Arity::Binary,
+            Op::Sub => Arity::Binary,
+            Op::Mul => Arity::Binary,
+            Op::Div => Arity::Binary,
+            Op::Rem => Arity::Binary,
+            Op::MulAdd => Arity::Ternary,
+            Op::FToI128ToF => Arity::Unary,
+            Op::FToU128ToF => Arity::Unary,
+            Op::FToSingleToF => Arity::Unary,
+            Op::FToDoubleToF => Arity::Unary,
+        }
+    }
+}
+
+/// Number of inputs to an operation.
+#[derive(Copy, Clone, Debug)]
+pub enum Arity {
+    Unary = 1,
+    Binary = 2,
+    Ternary = 3,
+}
+
 impl<HF> FuzzOp<HF>
 where
     HF: num_traits::Float

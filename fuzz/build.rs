@@ -6,6 +6,7 @@ use std::process::Command;
 // NB: Any new symbols exported from the C++ source file need to be listed here,
 // everything else will get pruned.
 const CXX_EXPORTED_SYMBOLS: &[&str] = &[
+    "check_error",
     "cxx_apf_eval_op_brainf16",
     "cxx_apf_eval_op_ieee16",
     "cxx_apf_eval_op_ieee32",

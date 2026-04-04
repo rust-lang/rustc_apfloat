@@ -1,6 +1,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "llvm/ADT/APFloat.h"
@@ -43,11 +44,11 @@ enum class OpCode: uint8_t {
 
 /** Similarly, rounding mode is passed as a u8 */
 enum class Round: uint8_t {
-  NearestTiesToEven = 0,
-  TowardZero        = 1,
-  TowardPositive    = 2,
-  TowardNegative    = 3,
-  NearestTiesToAway = 4,
+    NearestTiesToEven = 0,
+    TowardZero        = 1,
+    TowardPositive    = 2,
+    TowardNegative    = 3,
+    NearestTiesToAway = 4,
 };
 
 /* LLVM uses the following values:
@@ -57,8 +58,23 @@ enum class Round: uint8_t {
  * opOverflow  = 0x04,
  * opUnderflow = 0x08,
  * opInexact   = 0x10
+ *
+ * We also use -1 to indicate an exception.
  */
-using StatusFlags = unsigned;
+using StatusFlags = int32_t;
+
+/* Utilities for making C++ exceptions FFI-safe */
+thread_local const char *AP_ERROR = NULL;
+
+StatusFlags handle_std_exception(const std::exception& e) {
+    AP_ERROR = strdup(e.what());
+    return -1;
+}
+
+StatusFlags handle_unknown_exception() {
+    AP_ERROR = "Unknown exception";
+    return -1;
+}
 
 /** Common operations for a given semantics are grouped in this class */
 template<APFloat::Semantics S, typename U, const unsigned BITS = sizeof(U) * 8>
@@ -96,8 +112,7 @@ public:
         return APFloat(getSemantics(), APInt(BITS, words));
     }
 
-    /** Evaluate a dynamically specified operation with the given configuration */
-    static StatusFlags eval(OpCode op, Round round, UInt ai, UInt bi,
+    static StatusFlags eval_impl(OpCode op, Round round, UInt ai, UInt bi,
                             UInt ci, UInt &out)
     {
         APFloat a = bits_to_apf(ai);
@@ -154,7 +169,7 @@ public:
                 status = a.fusedMultiplyAdd(b, c, rm);
                 break;
             /* FIXME: the below operations could be incorrect and are discarding a
-               status, and (though unlikely) could have mistkes that cancel. It would
+               status, and (though unlikely) could have mistakes that cancel. It would
                be better to make `out` a u128 and only do a single conversion. */
             case OpCode::FToI128ToF:
                 i = APSInt(128, false);
@@ -171,7 +186,7 @@ public:
                 a.convert(sem, rm, &cvt_exact);
                 break;
             case OpCode::FToDoubleToF:
-                a.convert(APFloat::IEEEsingle(), rm, &cvt_exact);
+                a.convert(APFloat::IEEEdouble(), rm, &cvt_exact);
                 a.convert(sem, rm, &cvt_exact);
                 break;
             default:
@@ -181,6 +196,24 @@ public:
 
         out = apf_to_bits(a);
         return (StatusFlags)status;
+    }
+
+    /** Evaluate a dynamically specified operation with the given configuration */
+    /* FIXME(perf): since some of these may allocate, we should have an init
+     * function to prealloc, then pass a pointer to this call. */
+    static StatusFlags eval(OpCode op, Round round, UInt ai, UInt bi,
+                            UInt ci, UInt &out) {
+#if __cpp_exceptions
+        try {
+            return eval_impl(op, round, ai, bi, ci, out);
+        } catch (const std::exception& e) {
+            return handle_std_exception(e);
+        } catch(...) {
+            return handle_unknown_exception();
+        }
+#else
+        return eval_impl(op, round, ai, bi, ci, out);
+#endif
     }
 
     static const fltSemantics &getSemantics() {
@@ -206,8 +239,13 @@ class EvalX87F80: public FloatEval<APFloat::Semantics::S_x87DoubleExtended, uint
         return Ty::eval(op, round, ai, bi, ci, out); \
     }
 
+/* NB: Every symbol defined here also needs to be in the list in build.rs, otherwise they
+ * will get pruned during optimization. */
 extern "C" {
-    /* NB: Every symbol defined here also needs to be in the list in build.rs */
+    const char *check_error() {
+        return AP_ERROR;
+    }
+
     MAKE_EXTERN(EvalBrainF16, cxx_apf_eval_op_brainf16);
     MAKE_EXTERN(EvalIeee16, cxx_apf_eval_op_ieee16);
     MAKE_EXTERN(EvalIeee32, cxx_apf_eval_op_ieee32);

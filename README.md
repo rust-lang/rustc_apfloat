@@ -18,7 +18,7 @@ allocating to handle the arbitrary precision needed for conversions to/from deci
 
 However, that port had a fatal flaw: it was added to the `rust-lang/rust` repository
 without its unique licensing status (as a port of a C++ library with its own license)
-being properly tracked, communicated, taken into account, etc.  
+being properly tracked, communicated, taken into account, etc.
 The end result was years of limbo, mostly chronicled in the Rust issue
 [`rust-lang/rust#55993`](https://github.com/rust-lang/rust/issues/55993), in which
 the in-tree port couldn't really receive proper updated or even maintenance, due
@@ -28,39 +28,39 @@ due to its unclear status.
 
 This repository (`rust-lang/rustc_apfloat`) is the result of a 2022 plan on
 [the relevant Zulip topic](https://rust-lang.zulipchat.com/#narrow/stream/231349-t-core.2Flicensing/topic/apfloat), fully put into motion during 2023:
-* the `git` history of the in-tree `compiler/rustc_apfloat` library was extracted  
+* the `git` history of the in-tree `compiler/rustc_apfloat` library was extracted
   (see the separate [`rustc_apfloat-git-history-extraction`](https://github.com/LykenSol/rustc_apfloat-git-history-extraction) repository for more details)
 * only commits that were *both* necessary *and* had clear copyright status, were kept
-* any missing functionality or bug fixes, would have to be either be re-contributed,  
+* any missing functionality or bug fixes, would have to be either be re-contributed,
   or rebuilt from the ground up (mostly the latter ended up being done, see below)
 
 Most changes since the original port had been aesthetic (e.g. spell-checking, `rustfmt`),
 so little was lost in the process.
 
 Starting from that much smaller "trusted" base:
-* everything could use LLVM's new (since 2019) license, "`Apache-2.0 WITH LLVM-exception`"  
+* everything could use LLVM's new (since 2019) license, "`Apache-2.0 WITH LLVM-exception`"
   (see the ["Licensing"](#licensing) section below and/or [LICENSE-DETAILS.md](./LICENSE-DETAILS.md) for more details)
 * new facilities were built (benchmarks, and [a fuzzer comparing Rust/C++/hardware](#fuzzing))
 * excessive testing was performed (via a combination of fuzzing and bruteforce search)
 * latent bugs were discovered (e.g. LLVM issues
 [#63895](https://github.com/llvm/llvm-project/issues/63895) and
 [#63938](https://github.com/llvm/llvm-project/issues/63938))
-* the port has been forwarded in time, to include upstream (`llvm/llvm-project`) changes   
+* the port has been forwarded in time, to include upstream (`llvm/llvm-project`) changes
   to `llvm::APFloat` over the years (since 2017), removing the need for selective backports
 
 ## Versioning
 
-As this is, for the time being, a "living port", tracking upstream (`llvm/llvm-project`)  
+As this is, for the time being, a "living port", tracking upstream (`llvm/llvm-project`)
 `llvm::APFloat` changes, the `rustc_apfloat` crate will have versions of the form:
 
 ```
 0.X.Y+llvm-ZZZZZZZZZZZZ
 ```
-* `X` is always bumped after semver-incompatible API changes,  
+* `X` is always bumped after semver-incompatible API changes,
   or when updating the upstream (`llvm/llvm-project`) commit the port is based on
 * `Y` is only bumped when other parts of the version don't need to be (e.g. for bug fixes)
-* `+llvm-ZZZZZZZZZZZZ` is ["version metadata"](https://doc.rust-lang.org/cargo/reference/resolver.html#version-metadata) (which Cargo itself ignores),  
-  and `ZZZZZZZZZZZZ` always holds the first 12 hexadecimal digits of  
+* `+llvm-ZZZZZZZZZZZZ` is ["version metadata"](https://doc.rust-lang.org/cargo/reference/resolver.html#version-metadata) (which Cargo itself ignores),
+  and `ZZZZZZZZZZZZ` always holds the first 12 hexadecimal digits of
   the upstream (`llvm/llvm-project`) `git` commit hash the port is based on
 
 
@@ -84,7 +84,7 @@ involves an automated build of the original C++ `llvm::APFloat` code with `clang
 Rust code), and has been prototyped and tested on Linux (and is unlikely to work
 on other platforms, or even some Linux distros, though it mostly assumes UNIX).
 
-Example usage:  
+Example usage:
 <sub>(**TODO**: maybe move this to `fuzz/README.md` and/or expand on it)</sub>
 
 ```sh
@@ -103,10 +103,15 @@ cargo afl fuzz -i fuzz/in-foo -o fuzz/out-foo target/release/rustc_apfloat-fuzz
 ```
 
 To visualize the fuzzing testcases, you can use the `decode` subcommand:
+
 ```sh
 cargo run -p rustc_apfloat-fuzz decode fuzz/out-foo/default/crashes/*
 ```
-(this will work even while `cargo afl fuzz`, i.e. AFL++, is running)
+
+Note that `cargo run` and `cargo afl build` conflict, so if running the fuzzer
+and then decoding with the same debug/release setting, this will always trigger
+a rebuild. In these cases, launching the binary directly to call `decode` can
+avoid the extra builds.
 
 ## Licensing
 
