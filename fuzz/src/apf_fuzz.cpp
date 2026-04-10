@@ -127,7 +127,7 @@ public:
                 rm = APFloat::rmNearestTiesToAway;
                 break;
             default:
-                printf("unsupported rounding mode %d\n", rm);
+                printf("unsupported rounding mode %d\n", static_cast<int8_t>(rm));
                 exit(1);
         }
 
@@ -175,7 +175,7 @@ public:
                 a.convert(sem, rm, &cvt_exact);
                 break;
             default:
-                printf("unrecognized op tag %d", tag);
+                printf("unrecognized op tag %d", static_cast<int8_t>(tag));
                 exit(1);
         }
 

@@ -22,9 +22,18 @@ jobs:
             os: ubuntu-24.04
     steps:
     - uses: actions/checkout@v6
-    - name: Install Rust
-      run: rustup update nightly --no-self-update && rustup default nightly
+    - name: Install Dependencies
+      run: |
+        rustup update nightly --no-self-update
+        rustup default nightly
+        sudo apt-get install -y llvm  # Needed to build the C++ APFloat
+    - name: Download llvm source
+      run: ./etc/download-llvm.sh
+    # This should also cache LLVM since it downloads to `target/llvm-downloads`
     - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
     - name: Build and run tests
       run: cargo test --workspace
 
@@ -48,7 +57,7 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - run: |
         # strip the fuzz crate that uses a newer edition
-        sed '/members =/d' Cargo.toml
+        sed -i '/members =/d' Cargo.toml
         cargo build --package rustc_apfloat
 
   rustfmt:
