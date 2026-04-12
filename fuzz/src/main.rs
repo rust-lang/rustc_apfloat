@@ -85,6 +85,15 @@ enum Commands {
 fn main() {
     let cli_args = Args::parse();
 
+    // Check and panic as the fuzzer needs to do.
+    let fuzz_check =
+        |buf: &[u8], always_print| match decode_eval_check(&buf, &cli_args, always_print) {
+            Ok(()) => (),
+            // Discard decoding errors; we don't want the fuzzer to think this is a failure)
+            Err(Error::Decode(e)) => println!("decode error: {e} (no panic raised)"),
+            Err(Error::Check(e)) => panic!("check error: {e}"),
+        };
+
     if let Some(cmd) = &cli_args.command {
         match cmd {
             Commands::Check { file } => {
@@ -95,11 +104,7 @@ fn main() {
                     None => &mut io::stdin(),
                 };
                 reader.read_to_end(&mut buf).unwrap();
-                match decode_eval_check(&buf, &cli_args, false) {
-                    Ok(()) => (),
-                    Err(Error::Decode(e)) => println!("error: {e} (no panic raised)"),
-                    Err(Error::Check(e)) => panic!("check error: {e}"),
-                }
+                fuzz_check(&buf, true);
             }
             Commands::Decode { files } => run_decode_subcmd(files, &cli_args),
             Commands::Bruteforce { .. } => exhaustive::run_for_all_floats(&cli_args),
@@ -114,8 +119,7 @@ fn main() {
     if true {
         // FIXME(eddyb) make the first argument (panic hook choice) a CLI toggle.
         afl::fuzz(true, |buf| {
-            // Discard decoding errors
-            decode_eval_check(&buf, &cli_args, false).unwrap();
+            fuzz_check(&buf, false);
         });
 
         return;
