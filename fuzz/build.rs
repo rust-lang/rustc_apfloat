@@ -24,6 +24,8 @@ fn main() -> io::Result<()> {
     println!("cargo::rerun-if-changed=cxx");
     println!("cargo::rerun-if-changed=src/apf_fuzz.cpp");
 
+    emit_shorthands();
+
     // NOTE(eddyb) `rustc_apfloat`'s own `build.rs` validated the version string.
     let (_, llvm_commit_hash) = env!("CARGO_PKG_VERSION").split_once("+llvm-").unwrap();
     assert_eq!(llvm_commit_hash.len(), 12);
@@ -142,4 +144,20 @@ fn main() -> io::Result<()> {
     println!("cargo:rustc-link-lib=stdc++");
 
     Ok(())
+}
+
+/// Convenient versions of repeated configuration.
+fn emit_shorthands() {
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let target_features = env::var("CARGO_CFG_TARGET_FEATURE")
+        .map(|feats| feats.split(',').map(ToOwned::to_owned).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    // Emit a config
+    println!("cargo::rustc-check-cfg=cfg(x86_sse2)");
+    if (target_arch == "x86_64" || target_arch == "x86")
+        && target_features.iter().any(|feat| feat == "sse2")
+    {
+        println!("cargo::rustc-cfg=x86_sse2");
+    }
 }
