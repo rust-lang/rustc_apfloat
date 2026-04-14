@@ -10,6 +10,7 @@ mod host;
 use io::IsTerminal;
 use io::Read;
 use std::io;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::{fmt, fs};
 
@@ -202,7 +203,10 @@ macro_rules! float_reprs {
     ($($name:ident($repr:ty) {
         type RustcApFloat = $rs_apf_ty:ty;
         extern fn = $cxx_apf_eval_fuzz_op:ident;
-        $(type HardFloat = $hard_float_ty:ty;)?
+        $(
+            $(#[$($hard_float_cfg:tt)*])?
+            type HardFloat = $hard_float_ty:ty;
+        )?
     })+) => {
         macro_rules! for_each_repr {
             (for $ty_var:ident in all_reprs!() $block:block) => {
@@ -267,13 +271,18 @@ macro_rules! float_reprs {
                     status.and(Self(out))
                 }
 
-                #[allow(unused_variables)]
+                #[allow(unused)]
                 fn host_eval_fuzz_op_if_supported(
                     op: Op, rm: Round, a: Self, b: Self, c: Self
                 ) -> Option<StatusAnd<Self>> {
-                    None $(.or(
-                        Some(eval_host::<$hard_float_ty>(op, rm, a.0, b.0, c.0)?.map(Self))
-                    ))?
+                    let mut ret = None;
+                    $(
+                        $(#[$($hard_float_cfg)*])?
+                        {
+                            ret = Some(eval_host::<$hard_float_ty>(op, rm, a.0, b.0, c.0)?.map(Self));
+                        }
+                    )?
+                    ret
                 }
             }
 
@@ -345,6 +354,8 @@ float_reprs! {
     X87_F80(u128) {
         type RustcApFloat = rustc_apfloat::ieee::X87DoubleExtended;
         extern fn = cxx_apf_eval_op_x87_f80;
+        #[cfg(x86_sse2)]
+        type HardFloat = host::x86::x87_f80;
     }
 }
 
@@ -860,7 +871,7 @@ fn ignore_cxx<F: FloatRepr>(
         return None;
     }
 
-    let Masks { qnan_bit_mask, .. } = Masks::for_float::<F>();
+    let Masks { qnan_bit_mask, .. } = Masks::<F>::new();
 
     // For the F1->F2->F1 conversions where F1 and F2 are the same type, it seems like LLVM
     // doesn't actually do a conversion which means that sNaNs do not wind up quiet.
@@ -890,21 +901,20 @@ fn ignore_host<F: FloatRepr>(
         return None;
     }
 
-    let Masks {
-        sign_bit_mask,
-        exp_mask,
-        sig_mask,
-        qnan_bit_mask,
-    } = Masks::for_float::<F>();
+    let masks = Masks::<F>::new();
 
-    let is_nan = |bits| {
-        let is_nan = (bits & exp_mask) == exp_mask && (bits & sig_mask) != 0;
-        assert_eq!(F::RustcApFloat::from_bits(bits).is_nan(), is_nan);
-        is_nan
-    };
+    // FIXME: APFloat will implicitly normalize x87 denormals, but `fneg` is a bitwise
+    // operation on the sign bit.
+    if F::KIND == FpKind::X87_F80
+        && cfg.op == Op::Neg
+        && masks.is_x87_pseudo_subnormal(a.to_bits_u128())
+        && rs_apf_bits == (host_bits | (masks.explicit_one_mask.unwrap() << 1))
+    {
+        return Some("ignoring normalization of pseudo subnormals in `neg`");
+    }
 
     // Everything else is for handling NaNs.
-    if !(is_nan(host_bits) && is_nan(rs_apf_bits)) {
+    if !(masks.is_nan(host_bits) && masks.is_nan(rs_apf_bits)) {
         return None;
     }
 
@@ -913,7 +923,7 @@ fn ignore_host<F: FloatRepr>(
     let zero_sign_mask = if cfg.cli_strict_host_nan_sign {
         u128::MAX
     } else {
-        !sign_bit_mask
+        !masks.sign_bit_mask
     };
 
     let host_zero_sign = host_bits & zero_sign_mask;
@@ -939,14 +949,14 @@ fn ignore_host<F: FloatRepr>(
             // `INFINITY.to_bits() | qnan_bit_mask == NAN.to_bits()`,
             // i.e. seeting the QNaN is more than enough to turn
             // a non-NaN (infinities, specifically) into a NaN.
-            if !is_nan(in_bits) {
+            if !masks.is_nan(in_bits) {
                 continue;
             }
 
             // Make sure to "quiet" (i.e. turn SNaN into QNaN)
             // the input first, as propagation does (in the
             // default exception handling mode, at least).
-            let in_quiet = in_bits | qnan_bit_mask;
+            let in_quiet = in_bits | masks.qnan_bit_mask;
             let in_zero_sign = in_quiet & zero_sign_mask;
 
             if in_zero_sign == host_zero_sign {
@@ -970,10 +980,10 @@ fn ignore_host<F: FloatRepr>(
     // existing NaN, but APFloat returns the fresh default NaN instead).
     if cfg.cli_ignore_fma_nan_generate_vs_propagate {
         if cfg.op == Op::MulAdd
-            && !is_nan(a.to_bits_u128())
-            && !is_nan(b.to_bits_u128())
-            && is_nan(c.to_bits_u128())
-            && host_zero_sign == (c.to_bits_u128() | qnan_bit_mask) & zero_sign_mask
+            && !masks.is_nan(a.to_bits_u128())
+            && !masks.is_nan(b.to_bits_u128())
+            && masks.is_nan(c.to_bits_u128())
+            && host_zero_sign == (c.to_bits_u128() | masks.qnan_bit_mask) & zero_sign_mask
             && rs_apf_bits == F::RustcApFloat::NAN.to_bits()
         {
             return Some("fresh NaN from FMA");
@@ -1097,29 +1107,83 @@ fn round_to_u8(rm: Round) -> u8 {
 
 /// Masks for bitwise operations.
 #[derive(Clone, Copy, Debug)]
-struct Masks {
+struct Masks<F> {
     sign_bit_mask: u128,
     exp_mask: u128,
+    /// Significant including the explicit integer bit, if applicable.
+    #[cfg_attr(not(test), expect(unused))]
     sig_mask: u128,
+    /// Significand excluding the explicit integer bit, if applicable.
+    frac_mask: u128,
     qnan_bit_mask: u128,
+    explicit_one_mask: Option<u128>,
+    float: PhantomData<F>,
 }
 
-impl Masks {
-    fn for_float<F: FloatRepr>() -> Self {
+impl<F: FloatRepr> Masks<F> {
+    /// Note: This does not work for x87 double extended due to the explicit bit and pseudo
+    /// numbers (apfloat treats "pseudoinfinity" and "unnormlal" as NaN).
+    fn new() -> Self {
         // HACK(eddyb) to avoid putting this behind a `HasHardFloat` bound,
         // we hardcode some aspects of the IEEE binary float representation,
         // relying on `rustc_apfloat`-provided constants as a source of truth.
         let sign_bit_mask = 1 << (F::BIT_WIDTH - 1);
-        let exp_mask = F::RustcApFloat::INFINITY.to_bits();
-        let sig_mask = (1 << exp_mask.trailing_zeros()) - 1;
+        let mut exp_mask = F::RustcApFloat::INFINITY.to_bits();
+        let mut sig_mask = (1 << exp_mask.trailing_zeros()) - 1;
+        let frac_mask = sig_mask;
         let qnan_bit_mask = (sig_mask + 1) >> 1;
+        let mut explicit_one_mask = None;
+
+        if F::KIND == FpKind::X87_F80 {
+            let top = 1u128 << 63;
+            sig_mask |= top;
+            exp_mask &= !top;
+            explicit_one_mask = Some(top);
+        }
 
         Self {
             sign_bit_mask,
             exp_mask,
             sig_mask,
+            frac_mask,
             qnan_bit_mask,
+            explicit_one_mask,
+            float: PhantomData,
         }
+    }
+
+    /// Check whether an input is considered a NaN using masks.
+    fn is_nan(&self, bits: u128) -> bool {
+        let apf_nan = F::RustcApFloat::from_bits(bits).is_nan();
+        let exp = bits & self.exp_mask;
+        let sig = bits & self.frac_mask;
+        let mut mask_nan = (exp == self.exp_mask) && sig != 0;
+
+        // x87 needs handling for pseudovalues, which apfloat considers NaNs but simple
+        // masks may not.
+        if F::KIND == FpKind::X87_F80 {
+            let top = bits & self.explicit_one_mask.unwrap();
+
+            // Proper x87 normals require the integer bit set
+            mask_nan &= top != 0;
+
+            // "pseudoinfinity", saturated exponent with the rest zeros
+            mask_nan |= exp == self.exp_mask && top == 0 && sig == 0;
+            // "pseudoinfinity"
+            mask_nan |= exp == self.exp_mask && top == 0 && sig != 0;
+            // "unnormal", non-saturated non-zero exponent plus zero integer bit
+            mask_nan |= exp != 0 && exp != self.exp_mask && top == 0;
+        }
+
+        assert_eq!(apf_nan, mask_nan);
+        mask_nan
+    }
+
+    fn is_x87_pseudo_subnormal(&self, bits: u128) -> bool {
+        assert_eq!(F::KIND, FpKind::X87_F80);
+        let exp = bits & self.exp_mask;
+        let top = bits & self.explicit_one_mask.unwrap();
+        exp == 0 && top != 0
     }
 }
 
@@ -1266,15 +1330,19 @@ mod tests {
     }
 
     fn mask_assertions<F: FloatRepr>() {
-        let masks = Masks::for_float::<F>();
+        let masks = Masks::<F>::new();
         println!("{} masks: {masks:#?}", F::NAME);
         let Masks {
             sign_bit_mask,
             exp_mask,
             sig_mask,
+            frac_mask,
             qnan_bit_mask,
+            explicit_one_mask,
+            float: _,
         } = masks;
 
+        assert_eq!(frac_mask | explicit_one_mask.unwrap_or(0), sig_mask);
         // Sanity Checks
         assert_eq!(
             sign_bit_mask | exp_mask | sig_mask,
@@ -1292,7 +1360,10 @@ mod tests {
         } else {
             assert!(qnan_bit_mask.is_power_of_two());
         }
-        assert_eq!(exp_mask | qnan_bit_mask, F::RustcApFloat::NAN.to_bits());
+        assert_eq!(
+            exp_mask | explicit_one_mask.unwrap_or(0) | qnan_bit_mask,
+            F::RustcApFloat::NAN.to_bits()
+        );
     }
 
     /* Check that `ALL` actually contains all variants. */
