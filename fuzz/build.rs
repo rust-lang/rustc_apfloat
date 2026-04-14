@@ -14,7 +14,9 @@ const CXX_EXPORTED_SYMBOLS: &[&str] = &[
     "cxx_apf_eval_op_ieee128",
     "cxx_apf_eval_op_ppcdoubledouble",
     "cxx_apf_eval_op_f8e5m2",
+    "cxx_apf_eval_op_f8e5m2fnuz",
     "cxx_apf_eval_op_f8e4m3fn",
+    "cxx_apf_eval_op_f8e4m3fnuz",
     "cxx_apf_eval_op_x87_f80",
 ];
 

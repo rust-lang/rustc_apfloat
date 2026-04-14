@@ -229,7 +229,9 @@ class EvalIeee64: public FloatEval<APFloat::Semantics::S_IEEEdouble, uint64_t> {
 class EvalIeee128: public FloatEval<APFloat::Semantics::S_IEEEquad, uint128_t> {};
 class EvalPpcDoubleDouble: public FloatEval<APFloat::Semantics::S_PPCDoubleDouble, uint128_t> {};
 class EvalF8E5M2: public FloatEval<APFloat::Semantics::S_Float8E5M2, uint8_t> {};
+class EvalF8E5M2FNUZ: public FloatEval<APFloat::Semantics::S_Float8E5M2FNUZ, uint8_t> {};
 class EvalF8E4M3FN: public FloatEval<APFloat::Semantics::S_Float8E4M3FN, uint8_t> {};
+class EvalF8E4M3FNUZ: public FloatEval<APFloat::Semantics::S_Float8E4M3FNUZ, uint8_t> {};
 class EvalX87F80: public FloatEval<APFloat::Semantics::S_x87DoubleExtended, uint128_t, 80> {};
 
 /* And define the ways to invoke them */
@@ -253,6 +255,8 @@ extern "C" {
     MAKE_EXTERN(EvalIeee128, cxx_apf_eval_op_ieee128);
     MAKE_EXTERN(EvalPpcDoubleDouble, cxx_apf_eval_op_ppcdoubledouble);
     MAKE_EXTERN(EvalF8E5M2, cxx_apf_eval_op_f8e5m2);
+    MAKE_EXTERN(EvalF8E5M2FNUZ, cxx_apf_eval_op_f8e5m2fnuz);
     MAKE_EXTERN(EvalF8E4M3FN, cxx_apf_eval_op_f8e4m3fn);
+    MAKE_EXTERN(EvalF8E4M3FNUZ, cxx_apf_eval_op_f8e4m3fnuz);
     MAKE_EXTERN(EvalX87F80, cxx_apf_eval_op_x87_f80);
 }

@@ -336,9 +336,17 @@ float_reprs! {
         type RustcApFloat = rustc_apfloat::ieee::Float8E5M2;
         extern fn = cxx_apf_eval_op_f8e5m2;
     }
+    F8E5M2FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E5M2FNUZ;
+        extern fn = cxx_apf_eval_op_f8e5m2fnuz;
+    }
     F8E4M3FN(u8) {
         type RustcApFloat = rustc_apfloat::ieee::Float8E4M3FN;
         extern fn = cxx_apf_eval_op_f8e4m3fn;
+    }
+    F8E4M3FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E4M3FNUZ;
+        extern fn = cxx_apf_eval_op_f8e4m3fnuz;
     }
     BrainF16(u16) {
         type RustcApFloat = rustc_apfloat::ieee::BFloat;
@@ -360,7 +368,9 @@ pub enum FpKind {
     Ieee64 = 64,
     Ieee128 = 128,
     F8E5M2 = 8,
+    F8E5M2FNUZ = 8 + 2,
     F8E4M3FN = 8 + 1,
+    F8E4M3FNUZ = 8 + 3,
     BrainF16 = 16 + 1,
     #[allow(non_camel_case_types)]
     X87_F80 = 80,
@@ -528,14 +538,14 @@ impl EvalCfg {
         }
         // FIXME(f8): We often disagree with LLVM, more research is neeed to see which
         // implementation is correct.
-        if ret.kind == FpKind::F8E4M3FN {
+        if matches!(ret.kind, FpKind::F8E4M3FN | FpKind::F8E4M3FNUZ) {
             ret.ignore_cxx = Some("f8e4m3fn may be broken");
             if op == Op::MulAdd {
                 // Don't even run for FMA which crashes in LLVM
                 ret.run_cxx = false;
             }
         }
-        if ret.kind == FpKind::F8E5M2 {
+        if matches!(ret.kind, FpKind::F8E5M2 | FpKind::F8E5M2FNUZ) {
             ret.ignore_cxx = Some("f8e5m2 may be broken");
         }
 
@@ -622,8 +632,16 @@ fn decode_eval_check(data: &[u8], cli_args: &Args, always_print: bool) -> Result
             let (a, b, c, r) = decode_for_ty_eval::<F8E5M2>(&cfg, data)?;
             r.check_all(&cfg, a, b, c, always_print)?;
         }
+        FpKind::F8E5M2FNUZ => {
+            let (a, b, c, r) = decode_for_ty_eval::<F8E5M2FNUZ>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
         FpKind::F8E4M3FN => {
             let (a, b, c, r) = decode_for_ty_eval::<F8E4M3FN>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::F8E4M3FNUZ => {
+            let (a, b, c, r) = decode_for_ty_eval::<F8E4M3FNUZ>(&cfg, data)?;
             r.check_all(&cfg, a, b, c, always_print)?;
         }
         FpKind::BrainF16 => {
@@ -1239,7 +1257,9 @@ mod cxx {
         // Not defined here
         // make_extern!(PPCDoubleDouble, cxx_apf_eval_op_ppcdoubledouble);
         make_extern!(F8E5M2, cxx_apf_eval_op_f8e5m2);
+        make_extern!(F8E5M2FNUZ, cxx_apf_eval_op_f8e5m2fnuz);
         make_extern!(F8E4M3FN, cxx_apf_eval_op_f8e4m3fn);
+        make_extern!(F8E4M3FNUZ, cxx_apf_eval_op_f8e4m3fnuz);
         make_extern!(X87_F80, cxx_apf_eval_op_x87_f80);
     }
 
