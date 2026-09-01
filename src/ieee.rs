@@ -2010,12 +2010,8 @@ impl<S: Semantics> IeeeFloat<S> {
             // still signalled: IEEE 754 raises it whenever the largest finite
             // number is exceeded in magnitude by the result that unbounded
             // exponent range would have produced, whichever value the rounding
-            // mode then delivers. (LLVM's `handleOverflow` reports only the
-            // inexact result here; x87 hardware, and every other consumer that
-            // checks the flag, sees the overflow.)
-            Round::TowardNegative | Round::TowardZero => {
-                (Status::OVERFLOW | Status::INEXACT).and(Self::largest())
-            }
+            // mode then delivers.
+            Round::TowardNegative | Round::TowardZero => (Status::OVERFLOW | Status::INEXACT).and(Self::largest()),
         }
     }
 
