@@ -161,6 +161,10 @@ fn fast_two_sum<F: Float>(x: F, y: F) -> (F, F) {
     (hi, lo)
 }
 
+fn is_power_of_two<F: Float>(x: F) -> bool {
+    x.is_finite_non_zero() && x.abs().scalbn(-x.ilogb()) == F::from_u128(1).value
+}
+
 impl<F: FloatConvert<Fallback<F>>> Float for DoubleFloat<F>
 where
     Self: From<Fallback<F>>,
@@ -542,7 +546,18 @@ where
     }
 
     fn ilogb(self) -> ExpInt {
-        self.0.ilogb()
+        let DoubleFloat(hi, lo) = self;
+
+        if self.category() != Category::Normal
+            || (lo.is_zero() || hi.is_negative() == lo.is_negative())
+            || !is_power_of_two(hi)
+        {
+            hi.ilogb()
+        } else {
+            // Numbers of the form 2^a - 2^b or -2^a + 2^b are almost powers of two but
+            // get nudged out of the binade by the low component.
+            hi.ilogb() - 1
+        }
     }
 
     fn scalbn_r(self, exp: ExpInt, round: Round) -> Self {
