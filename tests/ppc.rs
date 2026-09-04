@@ -467,4 +467,10 @@ fn ppc_double_double_frexp() {
     let result = DoubleDouble::from_bits(input).frexp(&mut exp);
     assert_eq!(2, exp);
     assert_eq!(0x3c98000000000000_3fe8000000000000, result.to_bits());
+
+    // frexp quiets NaN.
+    let snan = DoubleDouble::snan(None);
+    let mut exp = 0;
+    let result = snan.frexp(&mut exp);
+    assert!(!result.is_signaling());
 }

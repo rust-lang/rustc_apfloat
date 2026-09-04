@@ -165,6 +165,30 @@ fn is_power_of_two<F: Float>(x: F) -> bool {
     x.is_finite_non_zero() && x.abs().scalbn(-x.ilogb()) == F::from_u128(1).value
 }
 
+/// Compute the ULP of the input using a definition from:
+/// Jean-Michel Muller. On the definition of ulp(x). [Research Report] RR-5504,
+/// LIP RR-2005-09, INRIA, LIP. 2005, pp.16. inria-00070503
+fn harrison_ulp<F: Float>(x: F) -> F {
+    match x.category() {
+        Category::NaN => return F::qnan(None),
+        Category::Infinity => return F::INFINITY,
+        Category::Zero => return F::SMALLEST,
+        Category::Normal => { /* fall through */ }
+    }
+
+    if x.is_denormal() || x.is_smallest_normalized() {
+        return F::SMALLEST;
+    }
+
+    // Match LLVM in not considering negative powers of two.
+    let mut exp = x.ilogb();
+    if !x.is_negative() && is_power_of_two(x) {
+        exp -= 1;
+    }
+
+    F::from_u128(1).value.scalbn(exp - (F::PRECISION as i32 - 1))
+}
+
 impl<F: FloatConvert<Fallback<F>>> Float for DoubleFloat<F>
 where
     Self: From<Fallback<F>>,
@@ -565,12 +589,111 @@ where
     }
 
     fn frexp_r(self, exp: &mut ExpInt, round: Round) -> Self {
-        let a = self.0.frexp_r(exp, round);
-        let mut b = self.1;
-        if self.category() == Category::Normal {
-            b = b.scalbn_r(-*exp, round);
+        // Get the unbiased exponent e of the number, where |self| = m * 2^e for m in [1.0, 2.0).
+        *exp = self.ilogb();
+
+        // For NaNs, quiet any signaling NaN and return the result, as per standard practice.
+        if *exp == crate::IEK_NAN {
+            let mut quiet = self;
+            quiet.0 = quiet.0.add_r(F::ZERO, Round::NearestTiesToEven).value;
+            return quiet;
         }
-        DoubleFloat(a, b)
+
+        // For infinity, return it unchanged. The exponent remains IEK_Inf.
+        if *exp == crate::IEK_INF {
+            return self;
+        }
+
+        // For zero, the fraction is zero and the standard requires the exponent be 0.
+        if *exp == crate::IEK_ZERO {
+            *exp = 0;
+            return self;
+        }
+
+        let DoubleFloat(hi, lo) = self;
+
+        // frexp requires the fraction's absolute value to be in [0.5, 1.0).
+        // ilogb provides an exponent for an absolute value in [1.0, 2.0).
+        // Increment the exponent to ensure the fraction is in the correct range.
+        *exp += 1;
+
+        let signs_disagree = hi.is_negative() != lo.is_negative();
+        let mut second = lo;
+        if self.category() == Category::Normal && lo.is_finite_non_zero() {
+            // The interpretation of Round::TowardZero depends on the sign of the combined
+            // self rather than the sign of the component.
+            let lo_rounding_mode = if round == Round::TowardZero {
+                if self.is_negative() {
+                    Round::TowardPositive
+                } else {
+                    Round::TowardNegative
+                }
+            } else if round == Round::NearestTiesToAway && signs_disagree && *exp > 0 {
+                // For Round::NearestTiesToAway, we face a similar problem. If signs disagree,
+                // Lo is a correction *toward* zero relative to Hi. Rounding Lo
+                // "away from zero" based on its own sign would move the value in the
+                // wrong direction. As a safe proxy, we use Round::NearestTiesToEven, which is
+                // direction-agnostic. We only need to bother with this if Lo is scaled
+                // down.
+                Round::NearestTiesToEven
+            } else {
+                round
+            };
+
+            second = lo.scalbn_r(-*exp, lo_rounding_mode);
+
+            // The Round::NearestTiesToEven proxy is correct most of the time, but it
+            // differs from Round::NearestTiesToAway when the scaled value of Lo is an
+            // exact midpoint.
+            // NOTE: This is morally equivalent to roundTiesTowardZero.
+            if round == Round::NearestTiesToAway && lo_rounding_mode == Round::NearestTiesToEven {
+                // Re-scale the result back to check if rounding occurred.
+                let recomposed_lo = second.scalbn_r(*exp, Round::NearestTiesToEven);
+                if recomposed_lo != lo {
+                    // RoundingError tells us which direction we rounded:
+                    //   - RoundingError > 0: we rounded up.
+                    //   - RoundingError < 0: we down up.
+                    let rounding_error = (recomposed_lo - lo).value;
+                    // Determine if scalbn(Lo, -Exp) landed exactly on a midpoint.
+                    // We do this by checking if the absolute rounding error is exactly
+                    // half a ULP of the result.
+                    let ulp_of_second = harrison_ulp(second);
+                    let scaled_ulp_of_second = ulp_of_second.scalbn_r(*exp - 1, Round::NearestTiesToEven);
+                    let is_midpoint = rounding_error.abs() == scaled_ulp_of_second;
+                    let rounded_lo_away = second.is_negative() == rounding_error.is_negative();
+                    // The sign of Hi and Lo disagree and we rounded Lo away: we must
+                    // decrease the magnitude of Second to increase the magnitude
+                    // First+Second.
+                    if is_midpoint && rounded_lo_away {
+                        second = if second.is_negative() {
+                            second.next_up().value
+                        } else {
+                            second.next_down().value
+                        };
+                    }
+                }
+            }
+
+            // Handle a tricky edge case where self is slightly less than a power of two
+            // (e.g., self = 2^k - epsilon). In this situation:
+            // 1. Hi is 2^k, and Lo is a small negative value -epsilon.
+            // 2. ilogb(self) correctly returns k-1.
+            // 3. Our initial Exp becomes (k-1) + 1 = k.
+            // 4. Scaling Hi (2^k) by 2^-k would yield a magnitude of 1.0 and
+            //    scaling Lo by 2^-k would yield zero. This would make the result 1.0
+            //    which is an invalid fraction, as the required interval is [0.5, 1.0).
+            // We detect this specific case by checking if Hi is a power of two and if
+            // the scaled Lo underflowed to zero. The fix: Increment Exp to k+1. This
+            // adjusts the scale factor, causing Hi to be scaled to 0.5, which is a
+            // valid fraction.
+            if second.is_zero() && signs_disagree && is_power_of_two(hi) {
+                *exp += 1;
+            }
+        }
+
+        let first = hi.scalbn_r(-*exp, round);
+
+        DoubleFloat(first, second)
     }
 }
 
@@ -787,5 +910,123 @@ mod tests {
         assert!(quiet_nan.round_to_integral(Round::TowardPositive).value.bitwise_eq(quiet_nan));
         assert!(quiet_nan.round_to_integral(Round::NearestTiesToAway).value.bitwise_eq(quiet_nan));
         assert!(quiet_nan.round_to_integral(Round::NearestTiesToEven).value.bitwise_eq(quiet_nan));
+    }
+
+    #[test]
+    fn ppc_double_double_frexp() {
+        let double_from_f64 = |f: f64| ieee::Double::from_bits(f.to_bits().into());
+        let dd = |hi, lo| DoubleFloat(double_from_f64(hi), double_from_f64(lo));
+
+        let frexp_test_cases = [
+            // Input: +infinity
+            TestCase::new(dd(f64::INFINITY, 0.0)).with_all((dd(f64::INFINITY, 0.0), ExpInt::MAX)),
+            // Input: -infinity
+            TestCase::new(dd(f64::NEG_INFINITY, 0.0)).with_all((dd(f64::NEG_INFINITY, 0.0), ExpInt::MAX)),
+            // Input: 2^-1074
+            TestCase::new(dd(f64::from_bits(1), 0.0)).with_all((dd(0.5, 0.0), -1073)),
+            // Input: (2^1, -2^-1073 + -2^-1074)
+            TestCase::new(dd(2.0, -3.0 * f64::from_bits(1)))
+                .with_all((dd(1.0, -2.0 * f64::from_bits(1)), 1))
+                .with(Round::NearestTiesToAway, (dd(1.0, -f64::from_bits(1)), 1))
+                .with(Round::TowardPositive, (dd(1.0, -f64::from_bits(1)), 1)),
+            // Input: (2^1, -2^-1073)
+            TestCase::new(dd(2.0, -2.0 * f64::from_bits(1))).with_all((dd(1.0, -f64::from_bits(1)), 1)),
+            // Input: (2^1, -2^-1074)
+            TestCase::new(dd(2.0, -f64::from_bits(1)))
+                .with_all((dd(0.5, -0.0), 2))
+                .with(Round::TowardNegative, (dd(1.0, -f64::from_bits(1)), 1))
+                .with(Round::TowardZero, (dd(1.0, -f64::from_bits(1)), 1)),
+            // Input: (2^2, -2^-1072 + -2^-1073 + -2^-1074)
+            TestCase::new(dd(4.0, -7.0 * f64::from_bits(1)))
+                .with_all((dd(1.0, -2.0 * f64::from_bits(1)), 2))
+                .with(Round::TowardPositive, (dd(1.0, -f64::from_bits(1)), 2)),
+            // Input: (2^2, -2^-1072 + -2^-1073)
+            TestCase::new(dd(4.0, -6.0 * f64::from_bits(1)))
+                .with_all((dd(1.0, -2.0 * f64::from_bits(1)), 2))
+                .with(Round::NearestTiesToAway, (dd(1.0, -f64::from_bits(1)), 2))
+                .with(Round::TowardPositive, (dd(1.0, -f64::from_bits(1)), 2)),
+            // Input: (2^2, -2^-1072 + -2^-1074)
+            TestCase::new(dd(4.0, -5.0 * f64::from_bits(1)))
+                .with_all((dd(1.0, -f64::from_bits(1)), 2))
+                .with(Round::TowardNegative, (dd(1.0, -2.0 * f64::from_bits(1)), 2))
+                .with(Round::TowardZero, (dd(1.0, -2.0 * f64::from_bits(1)), 2)),
+            // Input: (2^2, -2^-1072)
+            TestCase::new(dd(4.0, -4.0 * f64::from_bits(1))).with_all((dd(1.0, -f64::from_bits(1)), 2)),
+            // Input: (2^2, -2^-1073 + -2^-1074)
+            TestCase::new(dd(4.0, -3.0 * f64::from_bits(1)))
+                .with_all((dd(1.0, -f64::from_bits(1)), 2))
+                .with(Round::TowardPositive, (dd(0.5, -0.0), 3)),
+            // Input: (2^2, -2^-1073)
+            TestCase::new(dd(4.0, -2.0 * f64::from_bits(1)))
+                .with_all((dd(0.5, -0.0), 3))
+                .with(Round::TowardNegative, (dd(1.0, -f64::from_bits(1)), 2))
+                .with(Round::TowardZero, (dd(1.0, -f64::from_bits(1)), 2)),
+            // Input: (2^2, -2^-1074)
+            TestCase::new(dd(4.0, -f64::from_bits(1)))
+                .with_all((dd(0.5, -0.0), 3))
+                .with(Round::TowardNegative, (dd(1.0, -f64::from_bits(1)), 2))
+                .with(Round::TowardZero, (dd(1.0, -f64::from_bits(1)), 2)),
+            // Input: 3+3*2^-53 canonicalized to (3+2^-51, -2^-53)
+            // Output: 0.75+0.75*2^-53 canonicalized to (.75+2^-53, -2^-55)
+            TestCase::new(dd(f64::from_bits(0x4008_0000_0000_0001), -2.0f64.powi(-53)))
+                .with_all((dd(f64::from_bits(0x3fe8_0000_0000_0001), -2.0f64.powi(-55)), 2)),
+            // Input: (2^1021+2^969, 2^968-2^915)
+            TestCase::new(dd(f64::from_bits(0x7fc0_0000_0000_0001), f64::from_bits(0x7c6f_ffff_ffff_ffff)))
+                .with_all((dd(f64::from_bits(0x3fe0_0000_0000_0001), f64::from_bits(0x3c8f_ffff_ffff_ffff)), 1022)),
+            // Input: (2^1023, -2^-1)
+            TestCase::new(dd(2.0f64.powi(1023), -0.5)).with_all((dd(1.0, -f64::from_bits(1 << 50)), 1023)),
+            // Input: (2^1023, -2^-51)
+            TestCase::new(dd(2.0f64.powi(1023), -2.0f64.powi(-51))).with_all((dd(1.0, -f64::from_bits(1)), 1023)),
+            // Input: (2^1023, -2^-52)
+            TestCase::new(dd(2.0f64.powi(1023), -2.0f64.powi(-52)))
+                .with_all((dd(0.5, -0.0), 1024))
+                .with(Round::TowardNegative, (dd(1.0, -f64::from_bits(1)), 1023))
+                .with(Round::TowardZero, (dd(1.0, -f64::from_bits(1)), 1023)),
+            // Input: (2^1023, 2^-1074)
+            TestCase::new(dd(2.0f64.powi(1023), f64::from_bits(1)))
+                .with_all((dd(0.5, 0.0), 1024))
+                .with(Round::TowardPositive, (dd(0.5, f64::from_bits(1)), 1024)),
+            // Input: (2^1024-2^971, 2^970-2^918)
+            TestCase::new(DoubleDouble::largest())
+                .with_all((dd(f64::from_bits(0x3fef_ffff_ffff_ffff), f64::from_bits(0x3c8f_ffff_ffff_fffe)), 1024)),
+        ];
+
+        let negate = |test_case: TestCase<DoubleDouble, (DoubleDouble, ExpInt)>| TestCase {
+            input: -test_case.input,
+            nearest_ties_to_even: test_case.nearest_ties_to_even.map(|(v, e)| (-v, e)),
+            toward_positive: test_case.toward_negative.map(|(v, e)| (-v, e)),
+            toward_negative: test_case.toward_positive.map(|(v, e)| (-v, e)),
+            toward_zero: test_case.toward_zero.map(|(v, e)| (-v, e)),
+            nearest_ties_to_away: test_case.nearest_ties_to_away.map(|(v, e)| (-v, e)),
+        };
+
+        let mut actual_exp = 0;
+
+        for case in frexp_test_cases.iter().flat_map(|v| [*v, negate(*v)]) {
+            if let Some((expected, expected_exp)) = case.nearest_ties_to_even {
+                assert_eq!(case.input.frexp_r(&mut actual_exp, Round::NearestTiesToEven), expected);
+                assert_eq!(expected_exp, actual_exp);
+            }
+
+            if let Some((expected, expected_exp)) = case.nearest_ties_to_away {
+                assert_eq!(case.input.frexp_r(&mut actual_exp, Round::NearestTiesToAway), expected);
+                assert_eq!(expected_exp, actual_exp);
+            }
+
+            if let Some((expected, expected_exp)) = case.toward_positive {
+                assert_eq!(case.input.frexp_r(&mut actual_exp, Round::TowardPositive), expected);
+                assert_eq!(expected_exp, actual_exp);
+            }
+
+            if let Some((expected, expected_exp)) = case.toward_negative {
+                assert_eq!(case.input.frexp_r(&mut actual_exp, Round::TowardNegative), expected);
+                assert_eq!(expected_exp, actual_exp);
+            }
+
+            if let Some((expected, expected_exp)) = case.toward_zero {
+                assert_eq!(case.input.frexp_r(&mut actual_exp, Round::TowardZero), expected);
+                assert_eq!(expected_exp, actual_exp);
+            }
+        }
     }
 }
