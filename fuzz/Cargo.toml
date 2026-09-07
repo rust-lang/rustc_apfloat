@@ -19,3 +19,6 @@ unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(target_has_reliable_f16)',
     'cfg(target_has_reliable_f128)',
 ] }
+
+[lints.cargo]
+non_kebab_case_bins = "allow"
