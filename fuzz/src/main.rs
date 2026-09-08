@@ -384,7 +384,9 @@ impl FpKind {
         Self::Ieee64,
         Self::Ieee128,
         Self::F8E5M2,
+        Self::F8E5M2FNUZ,
         Self::F8E4M3FN,
+        Self::F8E4M3FNUZ,
         Self::BrainF16,
         Self::X87_F80,
     ];
