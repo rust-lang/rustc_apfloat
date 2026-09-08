@@ -42,6 +42,8 @@ fn main() -> io::Result<()> {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR unset"));
+    let target_vendors = env::var("CARGO_CFG_TARGET_VENDOR").unwrap();
+    let target_vendors = target_vendors.split(",").collect::<Vec<_>>();
     let target_dir = env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.parent().unwrap().join("target"));
@@ -71,7 +73,6 @@ fn main() -> io::Result<()> {
     // - LLVM `.bc` intermediate allows the steps below to reduce dependencies
     let mut clang = Command::new("clang++");
     clang
-        .env_clear()
         .args(["-xc++", "-", "-std=c++17"])
         .args(clang_codegen_flags)
         .arg("-I")
@@ -97,8 +98,7 @@ fn main() -> io::Result<()> {
 
     // Use the `internalize` pass (+ O3) to prune everything unexported.
     let mut opt = Command::new("opt");
-    opt.env_clear()
-        .arg("--internalize-public-api-list")
+    opt.arg("--internalize-public-api-list")
         .arg(CXX_EXPORTED_SYMBOLS.join(","))
         .arg(&bc_out)
         .arg("-o")
@@ -124,17 +124,16 @@ fn main() -> io::Result<()> {
     // Let Clang do the rest of the work, from the pruned `.bc`.
     let mut clang_final = Command::new("clang++");
     clang_final
-        .env_clear()
         .args(clang_codegen_flags)
         .arg(bc_opt_out)
         .args(["-c", "-o"])
         .arg(&obj_out);
-    eprintln!("+ {clang_final:?}");
+    println!("+ {clang_final:?}");
     assert!(clang_final.status()?.success());
 
     // Construct a linkable archive.
     let mut ar = Command::new("ar");
-    ar.env_clear().arg("rc").arg(archive).arg(&obj_out);
+    ar.arg("rc").arg(archive).arg(&obj_out);
     println!("+ {ar:?}");
     assert!(ar.status()?.success());
 
@@ -143,7 +142,13 @@ fn main() -> io::Result<()> {
         out_dir.to_str().unwrap()
     );
     println!("cargo:rustc-link-lib=cxx_apf_fuzz");
-    println!("cargo:rustc-link-lib=stdc++");
+
+    // On Apple, Clang can figure out `c++` but fails with `stdc++`
+    if target_vendors.contains(&"apple") {
+        println!("cargo:rustc-link-lib=c++");
+    } else {
+        println!("cargo:rustc-link-lib=stdc++");
+    }
 
     Ok(())
 }
