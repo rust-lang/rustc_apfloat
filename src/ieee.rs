@@ -1958,6 +1958,40 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         Some(reciprocal)
     }
 
+    fn get_exact_log2(self) -> Option<ExpInt> {
+        if !self.is_finite() || self.is_zero() || self.is_sign_negative() {
+            return None;
+        }
+
+        let mut pop_count = 0;
+        for part in self.sig {
+            pop_count += part.count_ones();
+            if pop_count > 1 {
+                // >1 bit set
+                return None;
+            }
+        }
+
+        if self.exp != S::MIN_EXP {
+            return Some(self.exp);
+        }
+
+        let mut countr_parts = 0;
+        for part in self.sig {
+            if part != 0 {
+                let r = self.exp - ExpInt::try_from(S::PRECISION).unwrap()
+                    + countr_parts
+                    + ExpInt::try_from(part.trailing_zeros()).unwrap()
+                    + 1;
+                return Some(r);
+            }
+
+            countr_parts += ExpInt::try_from(LIMB_BITS).unwrap();
+        }
+
+        unreachable!("didn't find the set bit")
+    }
+
     fn ilogb(mut self) -> ExpInt {
         if self.is_nan() {
             return IEK_NAN;

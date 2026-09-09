@@ -6,8 +6,9 @@ use rustc_apfloat::ieee::{
     BFloat, Double, Float8E4M3B11FNUZ, Float8E4M3FN, Float8E4M3FNUZ, Float8E5M2, Float8E5M2FNUZ, FloatTF32, Half, Quad,
     Single, X87DoubleExtended,
 };
-use rustc_apfloat::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
+use rustc_apfloat::{ppc, Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd};
+use std::any::TypeId;
 
 // FIXME(eddyb) maybe include this in `rustc_apfloat` itself?
 macro_rules! define_for_each_float_type {
@@ -5899,4 +5900,44 @@ fn float_tf32_to_f32() {
 
     let qnan = FloatTF32::qnan(None);
     assert!(qnan.to_f32().is_nan());
+}
+
+#[test]
+fn get_exact_log2() {
+    for_each_float_type!(for<F: Float> test::<F>());
+    fn test<F: Float + 'static>() {
+        let one = F::from_i128(1).value;
+
+        if TypeId::of::<F>() == TypeId::of::<ppc::DoubleDouble>() {
+            assert_eq!(None, one.get_exact_log2());
+            return;
+        }
+
+        let min_exp = F::MIN_EXP;
+        let max_exp = F::MAX_EXP;
+        let precision = ExpInt::try_from(F::PRECISION).unwrap();
+
+        assert_eq!(Some(0), one.get_exact_log2());
+        assert_eq!(None, "3.0".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(None, "-3.0".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(Some(3), "8.0".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(None, "-8.0".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(None, "-0.25".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(Some(-2), "0.25".parse::<F>().unwrap().get_exact_log2());
+
+        assert_eq!(None, F::ZERO.get_exact_log2());
+        assert_eq!(None, (-F::ZERO).get_exact_log2());
+        assert_eq!(None, F::INFINITY.get_exact_log2());
+        assert_eq!(None, (-F::INFINITY).get_exact_log2());
+        assert_eq!(None, F::NAN.get_exact_log2());
+        assert_eq!(None, (-F::NAN).get_exact_log2());
+
+        assert_eq!(None, one.scalbn(min_exp - precision - 1).get_exact_log2());
+        assert_eq!(None, one.scalbn(min_exp - precision).get_exact_log2());
+        assert_eq!(None, one.scalbn(max_exp + 1).get_exact_log2());
+
+        for i in (min_exp - precision + 1)..=max_exp {
+            assert_eq!(Some(i), one.scalbn(i).get_exact_log2())
+        }
+    }
 }
