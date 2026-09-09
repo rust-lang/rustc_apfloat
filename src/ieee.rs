@@ -1894,7 +1894,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         self.sig == rhs.sig
     }
 
-    fn is_negative(self) -> bool {
+    fn is_sign_negative(self) -> bool {
         self.read_only_sign_do_not_mutate
     }
 

@@ -405,7 +405,7 @@ where
         self.0.bitwise_eq(rhs.0) && self.1.bitwise_eq(rhs.1)
     }
 
-    fn is_negative(self) -> bool {
+    fn is_sign_negative(self) -> bool {
         self.0.is_negative()
     }
 

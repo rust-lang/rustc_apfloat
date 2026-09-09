@@ -495,11 +495,22 @@ pub trait Float:
         }
     }
 
-    /// IEEE-754R isSignMinus: Returns true if and only if the current value is
-    /// negative.
+    /// IEEE-754R isSignMinus: Returns true if and only if the current value has
+    /// a negative sign.
     ///
     /// This applies to zeros and NaNs as well.
-    fn is_negative(self) -> bool;
+    fn is_sign_negative(self) -> bool;
+
+    /// The inverse of [`is_negative`], returns true if and only if the current
+    /// value has a positive sign.
+    fn is_sign_positive(self) -> bool {
+        !self.is_sign_negative()
+    }
+
+    /// An alias for [`is_sign_negative`].
+    fn is_negative(self) -> bool {
+        self.is_sign_negative()
+    }
 
     /// IEEE-754R isNormal: Returns true if and only if the current value is normal.
     ///
