@@ -125,7 +125,7 @@ pub enum NanEncoding {
     /// where NaN is represented by a sign bit of 1 and all 0s in the exponent
     /// and mantissa (i.e. the negative zero encoding in a IEEE float). Since
     /// there is only one NaN value, it is treated as quiet NaN. This matches the
-    /// behavior described in https://arxiv.org/abs/2206.02915 .
+    /// behavior described in <https://arxiv.org/abs/2206.02915>.
     NegativeZero,
 }
 
@@ -372,17 +372,62 @@ ieee_semantics! {
     /// 8-bit floating point number with S1E5M2 bit layout.
     ///
     /// Follows IEEE-754 conventions with S1E5M2 bit layout as described in
-    /// <https://arxiv.org/abs/2209.05433>.
+    /// <https://arxiv.org/abs/2209.05433>. Has NaNs and infinities like standard float types.
+    ///
+    /// See also: <https://onnx.ai/onnx/technical/float8.html#e4m3fn-and-e5m2>.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E5M2};
+    ///
+    /// /* All special bitpatterns are similar to IEEE */
+    ///
+    /// assert_eq!(Float8E5M2::largest().to_bits(), 0b0_11110_11);
+    /// assert_eq!(Float8E5M2::SMALLEST.to_bits(), 0b0_00000_01);
+    ///
+    /// assert_eq!(Float8E5M2::INFINITY.to_bits(), 0b0_11111_00);
+    /// assert_eq!((-Float8E5M2::INFINITY).to_bits(), 0b1_11111_00);
+    ///
+    /// assert!(Float8E5M2::from_bits(0b0_11111_01).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b0_11111_10).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b0_11111_11).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b1_11111_01).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b1_11111_10).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b1_11111_11).is_nan());
+    ///
+    /// assert!(Float8E5M2::from_bits(0b0_00000_00).is_zero());
+    /// assert!(Float8E5M2::from_bits(0b1_00000_00).is_zero());
+    /// ```
     Float8E5M2 = Float8E5M2S(8:5),
 
     /// 8-bit floating point number with S1E5M2 bit layout and no infinity
     /// or signed zero.
     ///
     /// Mostly follows IEEE-754 conventions and bit layout S1E5M2 described in
-    /// <https://arxiv.org/abs/2206.02915>, with expanded range and with no
-    /// infinity or signed zero. NaN is represented as negative zero.
-    /// (FN -> Finite, UZ -> unsigned zero). This format's exponent bias is 16,
-    /// instead of the 15 (2 ** (5 - 1) - 1) that IEEE precedent would imply.
+    /// <https://arxiv.org/abs/2206.02915>, with expanded range and with no infinity or signed
+    /// zero (FN -> Finite, UZ -> unsigned zero). The typical negative zero bitpattern
+    /// (`1.00000.00`) instead represents the NaN.
+    ///
+    /// This format's exponent bias is 16, instead of the 15 (2 ** (5 - 1) - 1) that IEEE
+    /// precedent would imply.
+    ///
+    /// See also: <https://onnx.ai/onnx/technical/float8.html#e4m3fnuz-and-e5m2fnuz>.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E5M2FNUZ};
+    ///
+    /// // Typical infinite and NaN bitpatterns are used to represent finite values
+    /// assert_eq!(Float8E5M2FNUZ::largest().to_bits(), 0b0_11111_11);
+    /// assert_eq!(Float8E5M2FNUZ::SMALLEST.to_bits(), 0b0_00000_01);
+    ///
+    /// assert!(Float8E5M2FNUZ::from_bits(0b0_11111_00).is_finite());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b0_11111_11).is_finite());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b1_11111_00).is_finite());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b1_11111_11).is_finite());
+    ///
+    /// // There is no negative zero, this bitpattern represents NaN instead
+    /// assert!(Float8E5M2FNUZ::from_bits(0b0_00000_00).is_zero());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b1_00000_00).is_nan());
+    /// ```
     Float8E5M2FNUZ = Float8E5M2FNUZS(8:5) {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
         const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
@@ -391,10 +436,27 @@ ieee_semantics! {
 
     /// 8-bit floating point number with S1E4M3 bit layout.
     ///
-    /// This type mostly follows IEEE-754 conventions with a
-    /// bit layout S1E4M3 as described in <https://arxiv.org/abs/2209.05433>.
-    /// Unlike IEEE-754 types, there are no infinity values, and NaN is
-    /// represented with the exponent and mantissa bits set to all 1s.
+    /// This type mostly follows IEEE-754 conventions with a bit layout S1E4M3 as described in
+    /// <https://arxiv.org/abs/2209.05433>. Unlike IEEE-754 types, there are no infinity values,
+    /// and NaN is represented with the exponent and mantissa bits set to all 1s.
+    ///
+    /// Operations that would overflow to infinity are clamped instead.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E4M3FN};
+    ///
+    /// let largest = Float8E4M3FN::largest();
+    /// let one = Float8E4M3FN::from_u128(1).unwrap();
+    ///
+    ///
+    /// assert_eq!(largest.to_bits(), 0b0_1111_110);
+    /// assert_eq!(Float8E4M3FN::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert_eq!((largest + one).value.to_bits(), largest.to_bits());
+    ///
+    /// assert!(Float8E4M3FN::from_bits(0b0_0000_000).is_zero());
+    /// assert!(Float8E4M3FN::from_bits(0b1_0000_000).is_zero());
+    /// ```
     Float8E4M3FN = Float8E4M3FNS(8:4) {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
         const NAN_ENCODING: NanEncoding = NanEncoding::AllOnes;
@@ -404,23 +466,58 @@ ieee_semantics! {
     /// or signed zero.
     ///
     /// Mostly follows IEEE-754 conventions and bit layout S1E5M2 described in
-    /// <https://arxiv.org/abs/2206.02915>, with expanded range and with no
-    /// infinity or signed zero. NaN is represented as negative zero.
-    /// (FN -> Finite, UZ -> unsigned zero). This format's exponent bias is 8,
-    /// instead of the 7 (2 ** (4 - 1) - 1) that IEEE precedent would imply.
+    /// <https://arxiv.org/abs/2206.02915>, with expanded range and with no infinity or signed
+    /// zero. NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero). This
+    /// format's exponent bias is 8, instead of the 7 (2 ** (4 - 1) - 1) that IEEE precedent
+    /// would imply.
+    ///
+    /// See also: <https://onnx.ai/onnx/technical/float8.html#e4m3fnuz-and-e5m2fnuz>.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E4M3FNUZ};
+    ///
+    /// // Typical infinite and NaN bitpatterns are used to represent finite values
+    /// assert_eq!(Float8E4M3FNUZ::largest().to_bits(), 0b0_1111_111);
+    /// assert_eq!(Float8E4M3FNUZ::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert!(Float8E4M3FNUZ::from_bits(0b0_1111_100).is_finite());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b0_1111_111).is_finite());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b1_1111_100).is_finite());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b1_1111_111).is_finite());
+    ///
+    /// // There is no negative zero, this bitpattern represents NaN instead
+    /// assert!(Float8E4M3FNUZ::from_bits(0b0_0000_000).is_zero());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b1_0000_000).is_nan());
+    /// ```
     Float8E4M3FNUZ = Float8E4M3FNUZS(8:4) {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
         const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
         const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 1;
     },
 
-    /// 8-bit floating point number mostly following IEEE-754 conventions
-    /// and bit layout S1E4M3 with expanded range and with no infinity or signed
-    /// zero.
+    /// 8-bit floating point number mostly following IEEE-754 conventions and bit layout S1E4M3
+    /// with expanded range and with no infinity or signed zero.
     ///
     /// NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero).
     /// This format's exponent bias is 11, instead of the 7 (2 ** (4 - 1) - 1)
     /// that IEEE precedent would imply.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E4M3B11FNUZ};
+    ///
+    /// // Typical infinite and NaN bitpatterns are used to represent finite values
+    /// assert_eq!(Float8E4M3B11FNUZ::largest().to_bits(), 0b0_1111_111);
+    /// assert_eq!(Float8E4M3B11FNUZ::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_1111_100).is_finite());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_1111_111).is_finite());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b1_1111_100).is_finite());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b1_1111_111).is_finite());
+    ///
+    /// // There is no negative zero, this bitpattern represents NaN instead
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_0000_000).is_zero());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b1_0000_000).is_nan());
+    /// ```
     Float8E4M3B11FNUZ = Float8E4M3B11FNUZS(8:4) {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
         const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
