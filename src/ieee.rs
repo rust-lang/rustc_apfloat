@@ -82,6 +82,7 @@ enum Loss {
 }
 
 /// How the nonfinite values Inf and NaN are represented.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NonfiniteBehavior {
     /// Represents standard IEEE 754 behavior. A value is nonfinite if the
@@ -105,6 +106,7 @@ pub enum NonfiniteBehavior {
 /// This is curently only used in combination with `NonfiniteBehavior::NanOnly`,
 /// and using a variant other than IEEE while having IEEE non-finite behavior is
 /// liable to lead to unexpected results.
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NanEncoding {
     /// Represents the standard IEEE behavior where a value is NaN if its
