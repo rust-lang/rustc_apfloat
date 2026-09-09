@@ -1958,8 +1958,8 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         Some(reciprocal)
     }
 
-    fn get_exact_log2(self) -> Option<ExpInt> {
-        if !self.is_finite() || self.is_zero() || self.is_sign_negative() {
+    fn get_exact_log2_abs(self) -> Option<ExpInt> {
+        if !self.is_finite() || self.is_zero() {
             return None;
         }
 

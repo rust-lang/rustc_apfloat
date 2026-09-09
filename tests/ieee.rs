@@ -5910,6 +5910,7 @@ fn get_exact_log2() {
 
         if TypeId::of::<F>() == TypeId::of::<ppc::DoubleDouble>() {
             assert_eq!(None, one.get_exact_log2());
+            assert_eq!(None, one.get_exact_log2_abs());
             return;
         }
 
@@ -5920,10 +5921,16 @@ fn get_exact_log2() {
         assert_eq!(Some(0), one.get_exact_log2());
         assert_eq!(None, "3.0".parse::<F>().unwrap().get_exact_log2());
         assert_eq!(None, "-3.0".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(None, "3.0".parse::<F>().unwrap().get_exact_log2_abs());
+        assert_eq!(None, "-3.0".parse::<F>().unwrap().get_exact_log2_abs());
         assert_eq!(Some(3), "8.0".parse::<F>().unwrap().get_exact_log2());
         assert_eq!(None, "-8.0".parse::<F>().unwrap().get_exact_log2());
-        assert_eq!(None, "-0.25".parse::<F>().unwrap().get_exact_log2());
         assert_eq!(Some(-2), "0.25".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(Some(-2), "0.25".parse::<F>().unwrap().get_exact_log2_abs());
+        assert_eq!(None, "-0.25".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(Some(-2), "-0.25".parse::<F>().unwrap().get_exact_log2_abs());
+        assert_eq!(Some(3), "8.0".parse::<F>().unwrap().get_exact_log2());
+        assert_eq!(Some(3), "-8.0".parse::<F>().unwrap().get_exact_log2_abs());
 
         assert_eq!(None, F::ZERO.get_exact_log2());
         assert_eq!(None, (-F::ZERO).get_exact_log2());
@@ -5931,6 +5938,13 @@ fn get_exact_log2() {
         assert_eq!(None, (-F::INFINITY).get_exact_log2());
         assert_eq!(None, F::NAN.get_exact_log2());
         assert_eq!(None, (-F::NAN).get_exact_log2());
+
+        assert_eq!(None, F::ZERO.get_exact_log2_abs());
+        assert_eq!(None, (-F::ZERO).get_exact_log2_abs());
+        assert_eq!(None, F::INFINITY.get_exact_log2_abs());
+        assert_eq!(None, (-F::INFINITY).get_exact_log2_abs());
+        assert_eq!(None, F::NAN.get_exact_log2_abs());
+        assert_eq!(None, (-F::NAN).get_exact_log2_abs());
 
         assert_eq!(None, one.scalbn(min_exp - precision - 1).get_exact_log2());
         assert_eq!(None, one.scalbn(min_exp - precision).get_exact_log2());

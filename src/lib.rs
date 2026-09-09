@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/0b57c3a7b8dc7407174a5ef5644e493493c8a8ce>
+//! <https://github.com/llvm/llvm-project/commit/8a02fd3f94ff706c88cec14f1501cac6b6248162>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -606,9 +606,19 @@ pub trait Float:
     /// If this value has an exact multiplicative inverse, return it.
     fn get_exact_inverse(self) -> Option<Self>;
 
+    /// If this is an exact power of two, return the exponent while ignoring the
+    /// sign bit. If it's not an exact power of 2, return INT_MIN
+    fn get_exact_log2_abs(self) -> Option<ExpInt>;
+
     /// If this is an exact power of two, return the exponent. Otherwise, return
     /// `None`.
-    fn get_exact_log2(self) -> Option<ExpInt>;
+    fn get_exact_log2(self) -> Option<ExpInt> {
+        if self.is_sign_negative() {
+            None
+        } else {
+            self.get_exact_log2_abs()
+        }
+    }
 
     /// Returns the exponent of the internal representation of the Float.
     ///

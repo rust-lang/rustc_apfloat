@@ -436,7 +436,7 @@ where
         Fallback::from(self).get_exact_inverse().map(Self::from)
     }
 
-    fn get_exact_log2(self) -> Option<ExpInt> {
+    fn get_exact_log2_abs(self) -> Option<ExpInt> {
         // FIXME: not yet implemented upstream
         None
     }
