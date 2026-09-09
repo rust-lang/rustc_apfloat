@@ -44,7 +44,7 @@ use core::ops::{AddAssign, DivAssign, MulAssign, RemAssign, SubAssign};
 use core::str::FromStr;
 
 bitflags! {
-    /// IEEE-754R 7: Default exception handling.
+    /// IEEE-754 7: Default exception handling.
     ///
     /// UNDERFLOW or OVERFLOW are always returned or-ed with INEXACT.
     ///
@@ -128,7 +128,7 @@ pub enum Category {
     Zero,
 }
 
-/// IEEE-754R 4.3: Rounding-direction attributes.
+/// IEEE-754 4.3: Rounding-direction attributes.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Round {
     NearestTiesToEven,
@@ -175,7 +175,7 @@ pub struct ParseError(pub &'static str);
 /// implementation for a run-time library during development of a faster
 /// target-specific one.
 ///
-/// All 5 rounding modes in the IEEE-754R draft are handled correctly for all
+/// All 5 rounding modes in IEEE-754 2019 are handled correctly for all
 /// implemented operations. Currently implemented operations are add, subtract,
 /// multiply, divide, fused-multiply-add, conversion-to-float,
 /// conversion-to-integer and conversion-from-integer. New rounding modes
@@ -219,7 +219,7 @@ pub struct ParseError(pub &'static str);
 /// in non-conversion operations. The exponent is implicitly all 1 bits.
 ///
 /// `apfloat` does not provide any exception handling beyond default exception
-/// handling. We represent Signaling NaNs via IEEE-754R 2008 6.2.1 should clause
+/// handling. We represent Signaling NaNs via IEEE-754 2019 6.2.1 should clause
 /// by encoding Signaling NaNs with the first bit of its trailing significand as
 /// 0.
 ///
@@ -324,12 +324,13 @@ pub trait Float:
     fn ieee_rem(self, rhs: Self) -> StatusAnd<Self>;
     /// C fmod, or llvm frem.
     fn c_fmod(self, rhs: Self) -> StatusAnd<Self>;
+    /// IEEE-754 _roundToIntegral*_.
     fn round_to_integral(self, round: Round) -> StatusAnd<Self>;
 
-    /// IEEE-754R 2008 5.3.1: nextUp.
+    /// IEEE-753 _nextUp_.
     fn next_up(self) -> StatusAnd<Self>;
 
-    /// IEEE-754R 2008 5.3.1: nextDown.
+    /// IEEE-754 _nextDown_.
     ///
     /// *NOTE* since nextDown(x) = -nextUp(-x), we only implement nextUp with
     /// appropriate sign switching before/after the computation.
@@ -422,7 +423,7 @@ pub trait Float:
     /// Bitwise comparison for equality (QNaNs compare equal, 0!=-0).
     fn bitwise_eq(self, rhs: Self) -> bool;
 
-    // IEEE-754R 5.7.2 General operations.
+    // IEEE-754 5.7.2 General operations.
 
     /// Implements IEEE 754-2008 `minNum` with the SNaN handling of IEEE 754-2019 `minimumNumber`.
     /// Returns the smaller of the 2 arguments if both are not NaN. If either argument is a NaN,
@@ -496,7 +497,7 @@ pub trait Float:
         }
     }
 
-    /// IEEE-754R isSignMinus: Returns true if and only if the current value has
+    /// IEEE-754 _isSignMinus_: Returns true if and only if the current value has
     /// a negative sign.
     ///
     /// This applies to zeros and NaNs as well.
@@ -513,10 +514,10 @@ pub trait Float:
         self.is_sign_negative()
     }
 
-    /// IEEE-754R isNormal: Returns true if and only if the current value is normal.
+    /// IEEE-754 _isNormal_: Returns true if and only if the current value is normal.
     ///
     /// This implies that the current value of the float is not zero, subnormal,
-    /// infinite, or NaN following the definition of normality from IEEE-754R.
+    /// infinite, or NaN following the definition of normality from IEEE-754.
     fn is_normal(self) -> bool {
         !self.is_denormal() && self.is_finite_non_zero()
     }
@@ -534,11 +535,11 @@ pub trait Float:
         self.category() == Category::Zero
     }
 
-    /// IEEE-754R isSubnormal(): Returns true if and only if the float is a
+    /// IEEE-754 _isSubnormal_: Returns true if and only if the float is a
     /// denormal.
     fn is_denormal(self) -> bool;
 
-    /// IEEE-754R isInfinite(): Returns true if and only if the float is infinity.
+    /// IEEE-754 _isInfinite_: Returns true if and only if the float is infinity.
     fn is_infinite(self) -> bool {
         self.category() == Category::Infinity
     }

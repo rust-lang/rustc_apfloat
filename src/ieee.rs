@@ -941,10 +941,11 @@ impl IeeeDefaultExceptionHandling {
         assert!(r.is_nan());
 
         let status = if r.is_signaling() {
-            // [IEEE Std 754-2008 6.2]:
-            // Under default exception handling, any operation signaling an invalid
-            // operation exception and for which a floating-point result is to be
-            // delivered shall deliver a quiet NaN.
+            // [IEEE Std 754-2019 6.2]:
+            // > Under default exception handling, any operation signaling an invalid
+            // > operation exception and for which a floating-point result is to be
+            // > delivered, except as stated otherwise, shall deliver a quiet NaN. For
+            // > non- default treatment, see 8.
             let [sig] = &mut r.sig;
             *sig |= if S::QNAN_SIGNIFICAND == X87DoubleExtendedS::QNAN_SIGNIFICAND {
                 // HACK(eddyb) remain bug-compatible with the original C++ code
@@ -955,22 +956,27 @@ impl IeeeDefaultExceptionHandling {
                 S::QNAN_SIGNIFICAND
             };
 
-            // [IEEE Std 754-2008 6.2]:
-            // Signaling NaNs shall be reserved operands that, under default exception
-            // handling, signal the invalid operation exception(see 7.2) for every
-            // general-computational and signaling-computational operation except for
-            // the conversions described in 5.12.
+            // [IEEE Std 754-2019 6.2]:
+            // > Signaling NaNs shall be reserved operands that signal the invalid
+            // > operation exception (see 7.2) for every general-computational and
+            // > signaling-computational operation except for the conversions described
+            // > in 5.12.
             Status::INVALID_OP
         } else {
-            // [IEEE Std 754-2008 6.2]:
-            // For an operation with quiet NaN inputs, other than maximum and minimum
-            // operations, if a floating-point result is to be delivered the result
-            // shall be a quiet NaN which should be one of the input NaNs.
-            // ...
-            // Every general-computational and quiet-computational operation involving
-            // one or more input NaNs, none of them signaling, shall signal no
-            // exception, except fusedMultiplyAdd might signal the invalid operation
-            // exception(see 7.2).
+            // [IEEE Std 754-2019 6.2]:
+            //
+            // > Every general-computational and quiet-computational operation involving
+            // > one or more input NaNs, none of them signaling, shall signal no
+            // > exception, except fusedMultiplyAdd might signal the invalid operation
+            // > exception (see 7.2).
+            // >
+            // > For an operation with quiet NaN inputs, except as stated otherwise, if
+            // > a floating-point result is to be delivered the result shall be a
+            // > canonical quiet NaN.
+            //
+            // Note that "canonical quiet NaN" in this case is only relevant for
+            // decimal floating point. It does not mean we must return a single
+            // canonical NaN value, as some platfomrs (RISC-V) do for their operations.
             Status::OK
         };
         status.and(r)
@@ -1248,9 +1254,10 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             }
 
             // FS can only be Status::OK or Status::INVALID_OP. There is no more work
-            // to do in the latter case. The IEEE-754R standard says it is
+            // to do in the latter case. The IEEE-754 2019 standard says it is
             // implementation-defined in this case whether, if ADDEND is a
-            // quiet NaN, we raise invalid op; this implementation does so.
+            // quiet NaN, we raise invalid op; this implementation does so. (See 754
+            // section 7.2.)
             //
             // If we need to do the addition we can do so with normal
             // precision.
@@ -1529,7 +1536,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         match self.category() {
             Category::NaN => IeeeDefaultExceptionHandling::result_from_nan(self),
 
-            // [IEEE Std 754-2008 6.1]:
+            // [IEEE Std 754-2019 6.1]:
             // The behavior of infinity in floating-point arithmetic is derived from the
             // limiting cases of real arithmetic with operands of arbitrarily
             // large magnitude, when such a limit exists.
@@ -1538,7 +1545,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             // exceptions ...
             Category::Infinity => Status::OK.and(self),
 
-            // [IEEE Std 754-2008 6.3]:
+            // [IEEE Std 754-2019 6.3]:
             // ... the sign of the result of conversions, the quantize operation, the
             // roundToIntegral operations, and the roundToIntegralExact(see 5.3.1) is
             // the sign of the first or only operand.
@@ -1591,8 +1598,8 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 }
             }
             Category::NaN => {
-                // IEEE-754R 2008 6.2 Par 2: nextUp(sNaN) = qNaN. Set Invalid flag.
-                // IEEE-754R 2008 6.2: nextUp(qNaN) = qNaN. Must be identity so we do not
+                // IEEE-754 2019 6.2 Par 2: nextUp(sNaN) = qNaN. Set Invalid flag.
+                // IEEE-754 2019 6.2: nextUp(qNaN) = qNaN. Must be identity so we do not
                 //                     change the payload.
                 if self.is_signaling() {
                     // For consistency, propagate the sign of the sNaN to the qNaN.
@@ -1908,8 +1915,8 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     }
 
     fn is_signaling(self) -> bool {
-        // IEEE-754R 2008 6.2.1: A signaling NaN bit string should be encoded with the
-        // first bit of the trailing significand being 0.
+        // IEEE-754 2019 6.2.1:  signaling NaN bit string should be encoded with the
+        // first bit of the trailing significand field being 0.
         self.is_nan() && self.sig[0] & S::QNAN_SIGNIFICAND != S::QNAN_SIGNIFICAND
     }
 
