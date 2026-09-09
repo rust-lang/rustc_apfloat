@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/8a02fd3f94ff706c88cec14f1501cac6b6248162>
+//! <https://github.com/llvm/llvm-project/commit/6cfd3439d4b99be85f647849168e1076a9737170>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -425,15 +425,20 @@ pub trait Float:
 
     // IEEE-754 5.7.2 General operations.
 
-    /// Implements IEEE 754-2008 `minNum` with the SNaN handling of IEEE 754-2019 `minimumNumber`.
-    /// Returns the smaller of the 2 arguments if both are not NaN. If either argument is a NaN,
-    /// returns the other argument. If both arguments are equal (in particular, if one is `-0.0` and
-    /// `+0.0`), no guarantee is made about which one is returned.
+    /// Implements IEEE-754 2019 _minimumNumber_ semantics. Returns the smaller of the two arguments
+    /// if both are not NaN. If either argument is a NaN, returns the other argument. `-0.0` is
+    /// treated as ordered less than `+0.0`.
     fn min(self, other: Self) -> Self {
         if self.is_nan() {
             other
         } else if other.is_nan() {
             self
+        } else if self.is_zero() && other.is_zero() && (self.is_sign_negative() != other.is_sign_negative()) {
+            if self.is_sign_negative() {
+                self
+            } else {
+                other
+            }
         } else if other < self {
             other
         } else {
@@ -441,15 +446,20 @@ pub trait Float:
         }
     }
 
-    /// Implements IEEE 754-2008 `maxNum` with the SNaN handling of IEEE 754-2019 `maximumNumber`.
-    /// Returns the larger of the 2 arguments if both are not NaN. If either argument is a NaN,
-    /// returns the other argument. If both arguments are equal (in particular, if one is `-0.0` and
-    /// `+0.0`), no guarantee is made about which one is returned.
+    /// Implements IEEE-754 2019 _maximumNumber_ semantics. Returns the larger of the two arguments
+    /// if both are not NaN. If either argument is a NaN, returns the other argument. `+0.0` is
+    /// treated as ordered greater than `-0.0`.
     fn max(self, other: Self) -> Self {
         if self.is_nan() {
             other
         } else if other.is_nan() {
             self
+        } else if self.is_zero() && other.is_zero() && (self.is_sign_negative() != other.is_sign_negative()) {
+            if self.is_sign_negative() {
+                other
+            } else {
+                self
+            }
         } else if self < other {
             other
         } else {

@@ -761,6 +761,11 @@ fn min_num() {
     assert_eq!(1.0, f2.min(f1).to_f64());
     assert_eq!(1.0, f1.min(nan).to_f64());
     assert_eq!(1.0, nan.min(f1).to_f64());
+
+    let zp = Double::from_f64(0.0);
+    let zn = Double::from_f64(-0.0);
+    assert_eq!(-0.0, zp.min(zn).to_f64());
+    assert_eq!(-0.0, zn.min(zp).to_f64());
 }
 
 #[test]
@@ -773,6 +778,11 @@ fn max_num() {
     assert_eq!(2.0, f2.max(f1).to_f64());
     assert_eq!(1.0, f1.max(nan).to_f64());
     assert_eq!(1.0, nan.max(f1).to_f64());
+
+    let zp = Double::from_f64(0.0);
+    let zn = Double::from_f64(-0.0);
+    assert_eq!(0.0, zp.max(zn).to_f64());
+    assert_eq!(0.0, zn.max(zp).to_f64());
 }
 
 #[test]
