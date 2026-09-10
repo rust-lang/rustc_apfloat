@@ -2274,8 +2274,12 @@ impl<S: Semantics> IeeeFloat<S> {
             Round::NearestTiesToEven | Round::NearestTiesToAway | Round::TowardPositive => {
                 (Status::OVERFLOW | Status::INEXACT).and(Self::INFINITY)
             }
-            // Otherwise we become the largest finite number.
-            Round::TowardNegative | Round::TowardZero => Status::INEXACT.and(Self::largest()),
+            // Otherwise we become the largest finite number. The overflow is
+            // still signalled: IEEE 754 raises it whenever the largest finite
+            // number is exceeded in magnitude by the result that unbounded
+            // exponent range would have produced, whichever value the rounding
+            // mode then delivers.
+            Round::TowardNegative | Round::TowardZero => (Status::OVERFLOW | Status::INEXACT).and(Self::largest()),
         }
     }
 
