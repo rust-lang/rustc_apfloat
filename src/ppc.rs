@@ -142,6 +142,25 @@ impl<F: FloatConvert<Fallback<F>>> fmt::Display for DoubleFloat<F> {
     }
 }
 
+/// Returns a tuple (hi, lo) such that:
+///
+/// 1. lo.abs() <= ulp(hi)/2
+/// 2. hi == (hi + lo).round_to_integral(Round::NearestTiesToEven)
+/// 3. hi + lo == x + y
+///
+/// Requires that log2(x) >= log2(y).
+fn fast_two_sum<F: Float>(x: F, y: F) -> (F, F) {
+    if !x.is_finite() {
+        return (x, F::ZERO);
+    }
+
+    let hi = (x + y).value;
+    let delta = (hi - x).value;
+    let lo = (y - delta).value;
+
+    (hi, lo)
+}
+
 impl<F: FloatConvert<Fallback<F>>> Float for DoubleFloat<F>
 where
     Self: From<Fallback<F>>,
@@ -358,7 +377,88 @@ where
     }
 
     fn round_to_integral(self, round: Round) -> StatusAnd<Self> {
-        Fallback::from(self).round_to_integral(round).map(Self::from)
+        let Self(hi, lo) = self;
+
+        let StatusAnd {
+            status: hi_status,
+            value: mut rounded_hi,
+        } = hi.round_to_integral(round);
+
+        // We can reduce the problem to just the high part if the input:
+        // 1. Represents a non-finite value.
+        // 2. Has a component which is zero.
+        if !hi.is_finite_non_zero() || lo.is_zero() {
+            return hi_status.and(Self(rounded_hi, F::ZERO));
+        }
+
+        // Adjust `rounded` in the direction of `tie_breaker` if `to_round` was at a halfway point.
+        let round_to_nearest_helper = |to_round: F, mut rounded: F, tie_breaker: F| {
+            // rounding_error tells us which direction we rounded:
+            //   - rounding_error > 0: we rounded up.
+            //   - rounding_error < 0: we rounded down.
+            // Sterbenz' lemma ensures that rounding_error is exact.
+            let rounding_error = (rounded - to_round).value;
+
+            // The constant `0.5`.
+            let half = F::from_u128(1).value.scalbn(-1);
+
+            if tie_breaker.is_non_zero()
+                && tie_breaker.is_negative() != rounding_error.is_negative()
+                && rounding_error.abs() == half
+            {
+                let sign = F::from_u128(1).value.copy_sign(tie_breaker);
+                let add = rounded.add_r(sign, Round::NearestTiesToEven);
+                assert_eq!(add.status, Status::OK);
+                rounded = add.value;
+            }
+
+            rounded
+        };
+
+        // Case 1: hi is not an integer.
+        // Special cases are for rounding modes that are sensitive to ties.
+        if rounded_hi != hi {
+            // We need to consider the case where hi was between two integers and the
+            // rounding mode broke the tie when, in fact, lo may have had a different
+            // sign than hi.
+            if matches!(round, Round::NearestTiesToAway | Round::NearestTiesToEven) {
+                rounded_hi = round_to_nearest_helper(hi, rounded_hi, lo);
+            }
+
+            return hi_status.and(Self(rounded_hi, F::ZERO));
+        }
+
+        // Case 2: hi is an integer.
+        // Special cases are for rounding modes which are rounding towards or away from zero.
+        let lo_rounding_mode = if round == Round::TowardZero {
+            // When our input is positive, we want the lo component rounded toward
+            // negative infinity to get the smallest result magnitude. Likewise,
+            // negative inputs want the lo component rounded toward positive infinity.
+            if self.is_negative() {
+                Round::TowardPositive
+            } else {
+                Round::TowardNegative
+            }
+        } else {
+            round
+        };
+
+        let StatusAnd {
+            status: lo_status,
+            value: mut rounded_lo,
+        } = lo.round_to_integral(lo_rounding_mode);
+
+        if lo_rounding_mode == Round::NearestTiesToAway {
+            // We need to consider the case where lo was between two integers and the
+            // rounding mode broke the tie when, in fact, hi may have had a different
+            // sign than lo.
+            rounded_lo = round_to_nearest_helper(lo, rounded_lo, hi);
+        }
+
+        // We must ensure that the final result has no overlap between the two Float values.
+        let (rounded_hi, rounded_lo) = fast_two_sum(rounded_hi, rounded_lo);
+
+        lo_status.and(Self(rounded_hi, rounded_lo))
     }
 
     fn next_up(self) -> StatusAnd<Self> {
@@ -461,10 +561,216 @@ where
 
 // HACK(eddyb) this is here instead of in `tests/ppc.rs` because `DoubleFloat`
 // has private fields, and it's not worth it to make them public just for testing.
-#[test]
-fn is_integer() {
-    let double_from_f64 = |f: f64| ieee::Double::from_bits(f.to_bits().into());
-    assert!(DoubleFloat(double_from_f64(-0.0), double_from_f64(-0.0)).is_integer());
-    assert!(!DoubleFloat(double_from_f64(3.14159), double_from_f64(-0.0)).is_integer());
-    assert!(!DoubleFloat(double_from_f64(-0.0), double_from_f64(3.14159)).is_integer());
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_integer() {
+        let double_from_f64 = |f: f64| ieee::Double::from_bits(f.to_bits().into());
+        assert!(DoubleFloat(double_from_f64(-0.0), double_from_f64(-0.0)).is_integer());
+        assert!(!DoubleFloat(double_from_f64(3.14159), double_from_f64(-0.0)).is_integer());
+        assert!(!DoubleFloat(double_from_f64(-0.0), double_from_f64(3.14159)).is_integer());
+    }
+
+    #[derive(Copy, Clone)]
+    struct TestCase<I, T> {
+        input: I,
+
+        nearest_ties_to_even: Option<T>,
+        toward_positive: Option<T>,
+        toward_negative: Option<T>,
+        toward_zero: Option<T>,
+        nearest_ties_to_away: Option<T>,
+    }
+
+    impl<I, T: Copy> TestCase<I, T> {
+        fn new(input: I) -> Self {
+            Self {
+                input,
+                nearest_ties_to_even: None,
+                toward_positive: None,
+                toward_negative: None,
+                toward_zero: None,
+                nearest_ties_to_away: None,
+            }
+        }
+
+        fn with_all(self, expected: T) -> Self {
+            Self {
+                input: self.input,
+                nearest_ties_to_even: Some(expected),
+                toward_positive: Some(expected),
+                toward_negative: Some(expected),
+                toward_zero: Some(expected),
+                nearest_ties_to_away: Some(expected),
+            }
+        }
+
+        fn with(mut self, round: Round, expected: T) -> Self {
+            match round {
+                Round::NearestTiesToEven => self.nearest_ties_to_even = Some(expected),
+                Round::TowardPositive => self.toward_positive = Some(expected),
+                Round::TowardNegative => self.toward_negative = Some(expected),
+                Round::TowardZero => self.toward_zero = Some(expected),
+                Round::NearestTiesToAway => self.nearest_ties_to_away = Some(expected),
+            }
+
+            self
+        }
+    }
+
+    fn dd(hi: f64, lo: f64) -> DoubleDouble {
+        let double_from_f64 = |f: f64| ieee::Double::from_bits(f.to_bits().into());
+        DoubleFloat(double_from_f64(hi), double_from_f64(lo))
+    }
+
+    #[test]
+    fn ppc_double_double_round_to_integral() {
+        let eps = f64::EPSILON;
+        let half_eps = eps / 2.0;
+        let quarter_eps = eps / 4.0;
+        let smallest_normal = f64::MIN_POSITIVE;
+        let even_integer_threshold = (1u64 << f64::MANTISSA_DIGITS) as f64;
+
+        let round_to_integral_test_cases = [
+            // 1. Zeros and Basic Integers
+            TestCase::new(dd(0.0, 0.0)).with_all(dd(0.0, 0.0)),
+            TestCase::new(dd(2.0, 0.0)).with_all(dd(2.0, 0.0)),
+            TestCase::new(dd(3.0, 0.0)).with_all(dd(3.0, 0.0)),
+            // 2. General Fractions (Non-Ties)
+            TestCase::new(dd(2.3, 0.0))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardPositive, dd(3.0, 0.0)),
+            TestCase::new(dd(2.7, 0.0))
+                .with_all(dd(3.0, 0.0))
+                .with(Round::TowardZero, dd(2.0, 0.0))
+                .with(Round::TowardNegative, dd(2.0, 0.0)),
+            TestCase::new(dd(2.3, smallest_normal))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardPositive, dd(3.0, 0.0)),
+            // 3. Exact Midpoints (Ties at N.5)
+            TestCase::new(dd(0.5, 0.0))
+                .with_all(dd(0.0, 0.0))
+                .with(Round::TowardPositive, dd(1.0, 0.0))
+                .with(Round::NearestTiesToAway, dd(1.0, 0.0)),
+            TestCase::new(dd(1.5, 0.0))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardZero, dd(1.0, 0.0))
+                .with(Round::TowardNegative, dd(1.0, 0.0)),
+            TestCase::new(dd(2.5, 0.0))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardPositive, dd(3.0, 0.0))
+                .with(Round::NearestTiesToAway, dd(3.0, 0.0)),
+            // 4. Near Midpoints (lo breaks the tie)
+            TestCase::new(dd(2.5, smallest_normal))
+                .with_all(dd(3.0, 0.0))
+                .with(Round::TowardZero, dd(2.0, 0.0))
+                .with(Round::TowardNegative, dd(2.0, 0.0)),
+            TestCase::new(dd(2.5, -smallest_normal))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardPositive, dd(3.0, 0.0)),
+            TestCase::new(dd(1.5, smallest_normal))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardZero, dd(1.0, 0.0))
+                .with(Round::TowardNegative, dd(1.0, 0.0)),
+            TestCase::new(dd(1.5, -smallest_normal))
+                .with_all(dd(1.0, 0.0))
+                .with(Round::TowardPositive, dd(2.0, 0.0)),
+            // 5. Near Integers (lo crosses the integer boundary)
+            TestCase::new(dd(2.0, smallest_normal))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardPositive, dd(3.0, 0.0)),
+            TestCase::new(dd(2.0, -smallest_normal))
+                .with_all(dd(2.0, 0.0))
+                .with(Round::TowardZero, dd(1.0, 0.0))
+                .with(Round::TowardNegative, dd(1.0, 0.0)),
+            TestCase::new(dd(smallest_normal, 0.0))
+                .with_all(dd(0.0, 0.0))
+                .with(Round::TowardPositive, dd(1.0, 0.0)),
+            // 6. Boundary of Canonicalization (Maximum lo)
+            TestCase::new(dd(1.0, half_eps))
+                .with_all(dd(1.0, 0.0))
+                .with(Round::TowardPositive, dd(2.0, 0.0)),
+            TestCase::new(dd(1.0, -quarter_eps))
+                .with_all(dd(1.0, 0.0))
+                .with(Round::TowardZero, dd(0.0, 0.0))
+                .with(Round::TowardNegative, dd(0.0, 0.0)),
+            // 7. Large Magnitudes (Beyond 2^53). N = EvenIntegerThreshold (Even)
+            TestCase::new(dd(even_integer_threshold, 0.0)).with_all(dd(even_integer_threshold, 0.0)),
+            TestCase::new(dd(even_integer_threshold, 1.0)).with_all(dd(even_integer_threshold, 1.0)),
+            // Fractions
+            TestCase::new(dd(even_integer_threshold, 0.25))
+                .with_all(dd(even_integer_threshold, 0.0))
+                .with(Round::TowardPositive, dd(even_integer_threshold, 1.0)),
+            TestCase::new(dd(even_integer_threshold, 0.75))
+                .with_all(dd(even_integer_threshold, 1.0))
+                .with(Round::TowardZero, dd(even_integer_threshold, 0.0))
+                .with(Round::TowardNegative, dd(even_integer_threshold, 0.0)),
+            // Ties (Midpoints)
+            TestCase::new(dd(even_integer_threshold, 0.5))
+                .with_all(dd(even_integer_threshold, 0.0))
+                .with(Round::TowardPositive, dd(even_integer_threshold, 1.0))
+                .with(Round::NearestTiesToAway, dd(even_integer_threshold, 1.0)),
+            TestCase::new(dd(even_integer_threshold + 2.0, 0.5))
+                .with_all(dd(even_integer_threshold + 2.0, 0.0))
+                .with(Round::TowardPositive, dd(even_integer_threshold + 4.0, -1.0))
+                .with(Round::NearestTiesToAway, dd(even_integer_threshold + 4.0, -1.0)),
+            // Near Ties
+            TestCase::new(dd(even_integer_threshold, 0.5 + half_eps))
+                .with_all(dd(even_integer_threshold, 1.0))
+                .with(Round::TowardZero, dd(even_integer_threshold, 0.0))
+                .with(Round::TowardNegative, dd(even_integer_threshold, 0.0)),
+            TestCase::new(dd(even_integer_threshold, 0.5 - quarter_eps))
+                .with_all(dd(even_integer_threshold, 0.0))
+                .with(Round::TowardPositive, dd(even_integer_threshold, 1.0)),
+            // Canonical Boundary (Max lo for EvenIntegerThreshold is 1.0)
+            TestCase::new(dd(even_integer_threshold, 1.0)).with_all(dd(even_integer_threshold, 1.0)),
+            // 8. Special Values
+            TestCase::new(dd(f64::INFINITY, 0.0)).with_all(dd(f64::INFINITY, 0.0)),
+        ];
+
+        let negate = |test_case: TestCase<DoubleDouble, DoubleDouble>| TestCase {
+            input: -test_case.input,
+            nearest_ties_to_even: test_case.nearest_ties_to_even.map(|v| -v),
+            toward_positive: test_case.toward_negative.map(|v| -v),
+            toward_negative: test_case.toward_positive.map(|v| -v),
+            toward_zero: test_case.toward_zero.map(|v| -v),
+            nearest_ties_to_away: test_case.nearest_ties_to_away.map(|v| -v),
+        };
+
+        for case in round_to_integral_test_cases.iter().flat_map(|v| [*v, negate(*v)]) {
+            if let Some(expected) = case.nearest_ties_to_even {
+                assert_eq!(case.input.round_to_integral(Round::NearestTiesToEven).value, expected);
+            }
+
+            if let Some(expected) = case.nearest_ties_to_away {
+                assert_eq!(case.input.round_to_integral(Round::NearestTiesToAway).value, expected);
+            }
+
+            if let Some(expected) = case.toward_positive {
+                assert_eq!(case.input.round_to_integral(Round::TowardPositive).value, expected);
+            }
+
+            if let Some(expected) = case.toward_negative {
+                assert_eq!(case.input.round_to_integral(Round::TowardNegative).value, expected);
+            }
+
+            if let Some(expected) = case.toward_zero {
+                assert_eq!(case.input.round_to_integral(Round::TowardZero).value, expected);
+            }
+        }
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn ppc_double_double_round_to_integral_quiet_nan() {
+        let quiet_nan = dd(f64::NAN, 0.0);
+
+        assert!(quiet_nan.round_to_integral(Round::TowardZero).value.bitwise_eq(quiet_nan));
+        assert!(quiet_nan.round_to_integral(Round::TowardNegative).value.bitwise_eq(quiet_nan));
+        assert!(quiet_nan.round_to_integral(Round::TowardPositive).value.bitwise_eq(quiet_nan));
+        assert!(quiet_nan.round_to_integral(Round::NearestTiesToAway).value.bitwise_eq(quiet_nan));
+        assert!(quiet_nan.round_to_integral(Round::NearestTiesToEven).value.bitwise_eq(quiet_nan));
+    }
 }
