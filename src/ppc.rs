@@ -152,6 +152,7 @@ where
     const MIN_EXP: ExpInt = Fallback::<F>::MIN_EXP;
 
     const ZERO: Self = DoubleFloat(F::ZERO, F::ZERO);
+    const ONE: Self = DoubleFloat(F::ONE, F::ZERO);
 
     const INFINITY: Self = DoubleFloat(F::INFINITY, F::ZERO);
 

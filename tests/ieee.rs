@@ -2152,6 +2152,7 @@ fn convert() {
 
     let mut test = "0x1p-53".parse::<X87DoubleExtended>().unwrap();
     let one = "1.0".parse::<X87DoubleExtended>().unwrap();
+    assert_eq!(one, X87DoubleExtended::ONE);
     test += one;
     let test: Double = test.convert(&mut loses_info).value;
     assert_eq!(1.0, test.to_f64());
@@ -2159,6 +2160,7 @@ fn convert() {
 
     let mut test = "0x1p-53".parse::<Quad>().unwrap();
     let one = "1.0".parse::<Quad>().unwrap();
+    assert_eq!(one, Quad::ONE);
     test += one;
     let test: Double = test.convert(&mut loses_info).value;
     assert_eq!(1.0, test.to_f64());
@@ -5916,7 +5918,7 @@ fn float_tf32_to_f32() {
 fn get_exact_log2() {
     for_each_float_type!(for<F: Float> test::<F>());
     fn test<F: Float + 'static>() {
-        let one = F::from_i128(1).value;
+        let one = F::ONE;
 
         if TypeId::of::<F>() == TypeId::of::<ppc::DoubleDouble>() {
             assert_eq!(None, one.get_exact_log2());

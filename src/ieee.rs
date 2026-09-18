@@ -446,7 +446,7 @@ ieee_semantics! {
     /// use rustc_apfloat::{Float, ieee::Float8E4M3FN};
     ///
     /// let largest = Float8E4M3FN::largest();
-    /// let one = Float8E4M3FN::from_u128(1).unwrap();
+    /// let one = Float8E4M3FN::ONE;
     ///
     ///
     /// assert_eq!(largest.to_bits(), 0b0_1111_110);
@@ -1137,6 +1137,14 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         sig: [0],
         exp: S::MIN_EXP - 1,
         read_only_category_do_not_mutate: Category::Zero,
+        read_only_sign_do_not_mutate: false,
+        marker: PhantomData,
+    };
+
+    const ONE: Self = IeeeFloat {
+        sig: [1 << (S::PRECISION - 1)],
+        exp: 0,
+        read_only_category_do_not_mutate: Category::Normal,
         read_only_sign_do_not_mutate: false,
         marker: PhantomData,
     };
@@ -2045,7 +2053,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         }
 
         // Get the inverse.
-        let mut reciprocal = Self::from_u128(1).value;
+        let mut reciprocal = Self::ONE;
         let status;
         reciprocal = unpack!(status=, reciprocal / self);
         if status != Status::OK {
