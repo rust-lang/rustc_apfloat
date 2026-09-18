@@ -271,6 +271,9 @@ pub trait Float:
     /// Positive Zero.
     const ZERO: Self;
 
+    /// One.
+    const ONE: Self;
+
     /// Positive Infinity.
     const INFINITY: Self;
 
