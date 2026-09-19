@@ -35,6 +35,17 @@ jobs:
       run: ./etc/download-llvm.sh
     - name: Build and run tests
       run: cargo test --workspace
+    - if: always()
+      run: |
+
+        version="$(
+            cargo metadata --no-deps --format-version=1 |
+            jq -r '.packages | .[] | select(.name == "rustc_apfloat") | .version'
+        )"
+        llvm_hash="${version##*-}"
+        target_dir="${CARGO_TARGET_DIR:-target}"
+        out_dir="$target_dir/llvm-downloads"
+        find "$out_dir/llvm-project-$llvm_hash" | grep llvm/lib/Support
 
   msrv:
     name: Check the MSRV

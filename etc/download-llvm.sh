@@ -17,6 +17,7 @@ mkdir -p "$out_dir"
 
 if [ -d "$out_dir/llvm-project-$llvm_hash" ] && [ "${1:-}" != "-f" ]; then
     echo Download already exists. Pass '-f' to overwrite.
+    find "$out_dir/llvm-project-$llvm_hash" | grep llvm/lib/Support
     exit
 fi
 
