@@ -14,7 +14,16 @@ license.workspace = true
 repository = "https://github.com/rust-lang/rustc_apfloat"
 description = "Rust port of C++ llvm::APFloat library"
 rust-version = "1.65.0"
-exclude = [".github/"]
+include = [
+    "/src",
+    "/tests",
+    "/examples",
+    "/benches",
+    "/build.rs",
+    "/CHANGELOG*",
+    "/LICENSE*",
+    "/README*",
+]
 
 [dependencies]
 bitflags = "2.6.0"
