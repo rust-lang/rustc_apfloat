@@ -387,6 +387,9 @@ ieee_semantics! {
     /// assert_eq!(Float8E5M2::INFINITY.to_bits(), 0b0_11111_00);
     /// assert_eq!((-Float8E5M2::INFINITY).to_bits(), 0b1_11111_00);
     ///
+    /// assert_eq!(Float8E5M2::ONE.to_bits(), 0b0_01111_00);
+    /// assert_eq!((-Float8E5M2::ONE).to_bits(), 0b1_01111_00);
+    ///
     /// assert!(Float8E5M2::from_bits(0b0_11111_01).is_nan());
     /// assert!(Float8E5M2::from_bits(0b0_11111_10).is_nan());
     /// assert!(Float8E5M2::from_bits(0b0_11111_11).is_nan());
@@ -418,6 +421,9 @@ ieee_semantics! {
     /// // Typical infinite and NaN bitpatterns are used to represent finite values
     /// assert_eq!(Float8E5M2FNUZ::largest().to_bits(), 0b0_11111_11);
     /// assert_eq!(Float8E5M2FNUZ::SMALLEST.to_bits(), 0b0_00000_01);
+    ///
+    /// assert_eq!(Float8E5M2FNUZ::ONE.to_bits(), 0b0_10000_00);
+    /// assert_eq!((-Float8E5M2FNUZ::ONE).to_bits(), 0b1_10000_00);
     ///
     /// assert!(Float8E5M2FNUZ::from_bits(0b0_11111_00).is_finite());
     /// assert!(Float8E5M2FNUZ::from_bits(0b0_11111_11).is_finite());
@@ -452,6 +458,9 @@ ieee_semantics! {
     /// assert_eq!(largest.to_bits(), 0b0_1111_110);
     /// assert_eq!(Float8E4M3FN::SMALLEST.to_bits(), 0b0_0000_001);
     ///
+    /// assert_eq!(Float8E4M3FN::ONE.to_bits(), 0b0_0111_000);
+    /// assert_eq!((-Float8E4M3FN::ONE).to_bits(), 0b1_0111_000);
+    ///
     /// assert_eq!((largest + one).value.to_bits(), largest.to_bits());
     ///
     /// assert!(Float8E4M3FN::from_bits(0b0_0000_000).is_zero());
@@ -479,6 +488,9 @@ ieee_semantics! {
     /// // Typical infinite and NaN bitpatterns are used to represent finite values
     /// assert_eq!(Float8E4M3FNUZ::largest().to_bits(), 0b0_1111_111);
     /// assert_eq!(Float8E4M3FNUZ::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert_eq!(Float8E4M3FNUZ::ONE.to_bits(), 0b0_1000_000);
+    /// assert_eq!((-Float8E4M3FNUZ::ONE).to_bits(), 0b1_1000_000);
     ///
     /// assert!(Float8E4M3FNUZ::from_bits(0b0_1111_100).is_finite());
     /// assert!(Float8E4M3FNUZ::from_bits(0b0_1111_111).is_finite());
@@ -508,6 +520,9 @@ ieee_semantics! {
     /// // Typical infinite and NaN bitpatterns are used to represent finite values
     /// assert_eq!(Float8E4M3B11FNUZ::largest().to_bits(), 0b0_1111_111);
     /// assert_eq!(Float8E4M3B11FNUZ::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert_eq!(Float8E4M3B11FNUZ::ONE.to_bits(), 0b0_1011_000);
+    /// assert_eq!((-Float8E4M3B11FNUZ::ONE).to_bits(), 0b1_1011_000);
     ///
     /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_1111_100).is_finite());
     /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_1111_111).is_finite());

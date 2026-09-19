@@ -2121,6 +2121,44 @@ fn zero() {
     test::<Float8E4M3B11FNUZ>(true, false, 0);
     test::<FloatTF32>(false, true, 0);
     test::<FloatTF32>(true, true, 0x40000);
+    // Note that we have a `ONE` constant not present in LLVM. Update `fn one` to match
+    // when this test is updated.
+}
+
+// Note that LLVM does not have a `ONE` so this is our extension. Keep it similar to the `zero`
+// test.
+#[test]
+fn one() {
+    fn test<F: Float>(sign: bool, bits: u128) {
+        let test = if sign { -F::ONE } else { F::ONE };
+        let pattern = if sign { "-0x1p+0" } else { "0x1p+0" };
+        let expected = pattern.parse::<F>().unwrap();
+        assert_eq!(sign, test.is_negative());
+        assert!(test.bitwise_eq(expected));
+        assert_eq!(bits, test.to_bits());
+    }
+    test::<Half>(false, 0x3c00);
+    test::<Half>(true, 0xbc00);
+    test::<Single>(false, 0x3f800000);
+    test::<Single>(true, 0xbf800000);
+    test::<Double>(false, 0x3ff0000000000000);
+    test::<Double>(true, 0xbff0000000000000);
+    test::<Quad>(false, 0x3fff000000000000_0000000000000000);
+    test::<Quad>(true, 0xbfff000000000000_0000000000000000);
+    test::<X87DoubleExtended>(false, 0x3fff8000_000000000000);
+    test::<X87DoubleExtended>(true, 0xbfff8000_000000000000);
+    test::<Float8E5M2>(false, 0x3c);
+    test::<Float8E5M2>(true, 0xbc);
+    test::<Float8E5M2FNUZ>(false, 0x40);
+    test::<Float8E5M2FNUZ>(true, 0xc0);
+    test::<Float8E4M3FN>(false, 0x38);
+    test::<Float8E4M3FN>(true, 0xb8);
+    test::<Float8E4M3FNUZ>(false, 0x40);
+    test::<Float8E4M3FNUZ>(true, 0xc0);
+    test::<Float8E4M3B11FNUZ>(false, 0x58);
+    test::<Float8E4M3B11FNUZ>(true, 0xd8);
+    test::<FloatTF32>(false, 0x1fc00);
+    test::<FloatTF32>(true, 0x5fc00);
 }
 
 #[test]
