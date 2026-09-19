@@ -28,7 +28,7 @@ jobs:
         rustup default nightly
         sudo apt-get install -y llvm  # Needed to build the C++ APFloat
     # This should also cache LLVM since it downloads to `target/llvm-downloads`
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@6e5b278ead409e28cd5a784014d7ce55007a81d2
       with:
         key: ${{ matrix.target }}
     - name: Download llvm source
