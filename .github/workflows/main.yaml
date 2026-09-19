@@ -9,6 +9,7 @@ env:
   RUSTDOCFLAGS: -Dwarnings
   RUSTFLAGS: -Dwarnings
   RUST_BACKTRACE: full
+  LLVM_DOWNLOAD_DIR: "${{ github.workspace }}/llvm-downloads"
 
 jobs:
   test:
@@ -31,8 +32,15 @@ jobs:
     - uses: Swatinem/rust-cache@v2
       with:
         key: ${{ matrix.target }}
+
+    - name: Cache LLVM source
+      uses: actions/cache@v6
+      with:
+        path: llvm-downloads
+        key: llvm-downloads-${{ hashFiles('Cargo.toml', 'etc/download-llvm.sh') }}
     - name: Download llvm source
       run: ./etc/download-llvm.sh
+
     - name: Build and run tests
       run: cargo test --workspace
 

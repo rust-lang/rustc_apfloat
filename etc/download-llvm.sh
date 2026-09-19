@@ -12,7 +12,7 @@ version="$(
 llvm_hash="${version##*-}"
 
 target_dir="${CARGO_TARGET_DIR:-target}"
-out_dir="$target_dir/llvm-downloads"
+out_dir="${LLVM_DOWNLOAD_DIR:-$target_dir/llvm-downloads}"
 mkdir -p "$out_dir"
 
 if [ -d "$out_dir/llvm-project-$llvm_hash" ] && [ "${1:-}" != "-f" ]; then

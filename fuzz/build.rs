@@ -47,11 +47,15 @@ fn main() -> io::Result<()> {
     let target_dir = env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| manifest_dir.parent().unwrap().join("target"));
-    let llvm_root = target_dir.join(format!("llvm-downloads/llvm-project-{llvm_commit_hash}"));
+    let version_dir = format!("llvm-project-{llvm_commit_hash}");
+    let llvm_root = match env::var_os("LLVM_DOWNLOAD_DIR") {
+        Some(dir) => PathBuf::from(dir).join(version_dir),
+        None => target_dir.join("llvm-downloads").join(version_dir),
+    };
 
     if !llvm_root.try_exists().is_ok_and(|val| val) {
         panic!(
-            "llvm dir `{llvm_root:?}` does not exist or cannot be reached. \
+            "llvm dir {llvm_root:?} does not exist or cannot be reached. \
             Perhaps you need to run etc/download-llvm.sh?"
         )
     }
