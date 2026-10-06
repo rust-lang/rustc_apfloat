@@ -1,15 +1,27 @@
-use clap::{CommandFactory, Parser, Subcommand};
-use rustc_apfloat::Float as _;
-use std::io::Write;
-use std::mem::MaybeUninit;
-use std::num::NonZeroUsize;
+#![feature(f16)]
+#![feature(f128)]
+#![allow(internal_features)] // for the below config
+#![feature(cfg_target_has_reliable_f16_f128)]
+
+mod corpus;
+mod exhaustive;
+mod host;
+
+use io::IsTerminal;
+use io::Read;
+use std::io;
 use std::path::PathBuf;
-use std::{fmt, mem};
+use std::{fmt, fs};
 
-// See `build.rs` and `ops.rs` for how `FuzzOp` is generated.
-include!(concat!(env!("OUT_DIR"), "/generated_fuzz_ops.rs"));
+use clap::{CommandFactory, Parser, Subcommand};
+use num_derive::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive, ToPrimitive};
+use rustc_apfloat::ieee::{Double, Single};
+use rustc_apfloat::{Float, FloatConvert, Round, Status, StatusAnd, ieee};
 
-#[derive(Clone, Parser, Debug)]
+use crate::host::HostFloat;
+
+#[derive(Clone, Parser, Debug, Default)]
 struct Args {
     /// Disable comparison with C++ (LLVM's original) APFloat
     #[arg(long)]
@@ -41,6 +53,16 @@ struct Args {
 
 #[derive(Clone, Subcommand, Debug)]
 enum Commands {
+    /// Check the input from stdin similar to what the fuzzer will run
+    Check {
+        /// The file to check. If unspecified or `-`, read from stdin.
+        file: Option<PathBuf>,
+    },
+    /// Construct a test corpus in the specified directory
+    Corpus {
+        /// The file to check. If unspecified or `-`, read from stdin.
+        outdir: PathBuf,
+    },
     /// Decode fuzzing in/out testcases (binary serialized `FuzzOp`s)
     Decode { files: Vec<PathBuf> },
 
@@ -66,6 +88,67 @@ enum Commands {
     },
 }
 
+fn main() {
+    let cli_args = Args::parse();
+
+    // Check and panic as the fuzzer needs to do.
+    let fuzz_check =
+        |buf: &[u8], always_print| match decode_eval_check(&buf, &cli_args, always_print) {
+            Ok(()) => (),
+            // Discard decoding errors; we don't want the fuzzer to think this is a failure)
+            Err(Error::Decode(e)) => println!("decode error: {e} (no panic raised)"),
+            Err(Error::Check(e)) => panic!("check error: {e}"),
+        };
+
+    if let Some(cmd) = &cli_args.command {
+        match cmd {
+            Commands::Check { file } => {
+                let mut buf = Vec::new();
+                let reader: &mut dyn Read = match file {
+                    Some(fname) if fname == "-" => &mut io::stdin(),
+                    Some(fname) => &mut fs::File::open(fname).unwrap(),
+                    None => &mut io::stdin(),
+                };
+                reader.read_to_end(&mut buf).unwrap();
+                fuzz_check(&buf, true);
+            }
+            Commands::Corpus { outdir } => corpus::generate(&outdir),
+            Commands::Decode { files } => run_decode_subcmd(files, &cli_args),
+            Commands::Bruteforce { .. } => exhaustive::run_for_all_floats(&cli_args),
+        }
+        return;
+    }
+
+    // HACK(eddyb) `#[cfg(fuzzing)] {...}` used instead of `if cfg!(fuzzing) {...}`
+    // because the latter can still cause the `afl` crate to be linked, and it
+    // depends on native libraries that are only available under `cargo afl ...`.
+    #[cfg(fuzzing)]
+    if true {
+        // FIXME(eddyb) make the first argument (panic hook choice) a CLI toggle.
+        afl::fuzz(true, |buf| {
+            fuzz_check(&buf, false);
+        });
+
+        return;
+    }
+
+    // FIXME(eddyb) add better docs for all of this.
+    // FIXME(eddyb) add `seed` subcommand using `FuzzOp::encode_into`, and a set
+    // of basic examples, e.g. every `FuzzOp` variant with `0.0` for all inputs
+    // (and/or maybe testcases from known and/or fixed bugs, too).
+    Args::command().print_long_help().unwrap();
+    eprintln!(
+        "\n\
+        To fuzz `rustc_apfloat`, you must use `cargo afl`:\n\
+        - `cargo install afl`\n\
+        - build with `cargo afl build -p rustc_apfloat-fuzz --release`\n\
+        - seed with `mkdir fuzz/in-foo && echo > fuzz/in-foo/empty`\n\
+        - run with `cargo afl fuzz -i fuzz/in-foo -o fuzz/out-foo target/release/rustc_apfloat-fuzz`\n\
+        "
+    );
+    std::process::exit(1);
+}
+
 /// Trait implemented for types that describe a floating-point format supported
 /// by `rustc_apfloat`, but which themselves only carry the binary representation
 /// (instead of `rustc_apfloat` types or native/hardware floating-point types).
@@ -77,75 +160,76 @@ enum Commands {
 /// Because of the C++ interop (exposed via the `cxx_apf_eval_fuzz_op` method),
 /// all types implementing this trait *must* be annotated with `#[repr(C, packed)]`,
 /// and `ops.rs` *must* also ensure exactly matching layout for the C++ counterpart.
-trait FloatRepr: Copy + Default + Eq + fmt::Display {
-    type RustcApFloat: rustc_apfloat::Float
-        + rustc_apfloat::Float
-        + rustc_apfloat::FloatConvert<rustc_apfloat::ieee::Single>
-        + rustc_apfloat::FloatConvert<rustc_apfloat::ieee::Double>;
+trait FloatRepr: Copy + Default + Eq + fmt::Display + fmt::Debug {
+    type RustcApFloat: Float + FloatConvert<ieee::Single> + FloatConvert<ieee::Double> + fmt::Debug;
+    type Repr;
 
     const BIT_WIDTH: usize = Self::RustcApFloat::BITS;
     const BYTE_LEN: usize = (Self::BIT_WIDTH + 7) / 8;
 
     const NAME: &'static str;
 
-    // HACK(eddyb) this has to be overwritable because we have more than one
-    // format with the same `BIT_WIDTH`, so it's not unambiguous on its own.
-    const REPR_TAG: u8 = Self::BIT_WIDTH as u8;
+    const KIND: FpKind;
 
     fn short_lowercase_name() -> String {
         Self::NAME.to_ascii_lowercase().replace("ieee", "f")
     }
 
-    // FIXME(eddyb) these should ideally be using `[u8; Self::BYTE_LEN]`.
+    fn to_ap(self) -> Self::RustcApFloat;
+    fn from_ap(x: Self::RustcApFloat) -> Self;
+
+    // FIXME(const) `[u8; Self::BYTE_LEN]` would be better but requires MGCA.
     fn from_le_bytes(bytes: &[u8]) -> Self;
     fn write_as_le_bytes_into(self, out_bytes: &mut Vec<u8>);
 
     fn to_bits_u128(self) -> u128;
     fn from_bits_u128(bits: u128) -> Self;
 
-    // HACK(eddyb) this avoids needing another trait (or an `enum` of all formats).
-    fn cxx_apf_eval_fuzz_op(op: FuzzOp<Self>) -> Self;
-    // HACK(eddyb) this avoids dealing with separate traits and other complications.
-    fn hard_eval_fuzz_op_if_supported(op: FuzzOp<Self>) -> Option<Self>;
+    fn cxx_apf_eval_fuzz_op(op: Op, rm: Round, a: Self, b: Self, c: Self) -> StatusAnd<Self>;
+    fn host_eval_fuzz_op_if_supported(
+        op: Op,
+        rm: Round,
+        a: Self,
+        b: Self,
+        c: Self,
+    ) -> Option<StatusAnd<Self>>;
+    fn host_supports_fp_env() -> bool;
 }
 
 macro_rules! float_reprs {
     ($($name:ident($repr:ty) {
         type RustcApFloat = $rs_apf_ty:ty;
-        $(const REPR_TAG = $repr_tag:expr;)?
         extern fn = $cxx_apf_eval_fuzz_op:ident;
         $(type HardFloat = $hard_float_ty:ty;)?
     })+) => {
-        // HACK(eddyb) helper macro used to actually handle all types uniformly.
-        macro_rules! dispatch_any_float_repr_by_repr_tag {
-            (match $repr_tag_value:ident { for<$ty_var:ident: FloatRepr> => $e:expr }) => {
-                // NOTE(eddyb) this doubles as an overlap check: `REPR_TAG`
-                // values across *all* `FloatRepr` `impl` *must* be unique.
-                #[deny(unreachable_patterns)]
-                match $repr_tag_value {
-                    $($name::REPR_TAG => {
-                        type $ty_var = $name;
-                        $e;
-                    })+
-                    _ => {}
-                }
-            }
+        macro_rules! for_each_repr {
+            (for $ty_var:ident in all_reprs!() $block:block) => {
+                $({
+                   type $ty_var = $crate::$name;
+                   $block
+                })+
+            };
         }
 
         $(
-            // HACK(eddyb) `packed` is here becasue `u128` alignment can differ
-            // from `__uint128_t` alignment, on some platforms, and it's better
-            // to just get rid of alignment sources entirely.
-            #[repr(C, packed)]
+            #[repr(C)]
             #[derive(Copy, Clone, Default, PartialEq, Eq)]
             struct $name($repr);
 
             impl FloatRepr for $name {
                 type RustcApFloat = $rs_apf_ty;
+                type Repr = $repr;
 
                 const NAME: &'static str = stringify!($name);
+                const KIND: FpKind = FpKind::$name;
 
-                $(const REPR_TAG: u8 = $repr_tag;)?
+                fn to_ap(self) -> Self::RustcApFloat {
+                    Self::RustcApFloat::from_bits(self.to_bits_u128())
+                }
+
+                fn from_ap(x: Self::RustcApFloat) -> Self {
+                    Self::from_bits_u128(x.to_bits())
+                }
 
                 fn from_le_bytes(bytes: &[u8]) -> Self {
                     // HACK(eddyb) this allows using e.g. `u128` to hold 80 bits.
@@ -166,24 +250,38 @@ macro_rules! float_reprs {
                     Self(bits.try_into().unwrap())
                 }
 
-                fn cxx_apf_eval_fuzz_op(op: FuzzOp<Self>) -> Self {
-                    extern "C" {
-                        // HACK(eddyb) the warning is about `u128` ABI issues,
-                        // which is also why indirection is used.
-                        #[allow(improper_ctypes)]
-                        fn $cxx_apf_eval_fuzz_op(out: &mut MaybeUninit<$name>, op: &FuzzOp<$name>);
-                    }
-                    unsafe {
-                        let mut out = MaybeUninit::uninit();
-                        $cxx_apf_eval_fuzz_op(&mut out, &op);
-                        out.assume_init()
-                    }
+                fn cxx_apf_eval_fuzz_op(
+                    op: Op, rm: Round, a: Self, b: Self, c: Self
+                ) -> StatusAnd<Self>
+                {
+
+                    let rm = round_to_u8(rm);
+                    let mut out = 0;
+                    let status = cxx::$cxx_apf_eval_fuzz_op(
+                        op.to_u8().unwrap(), rm, a.0, b.0, c.0, &mut out,
+                    );
+                    let status = cxx::decode_status(status);
+
+                    status.and(Self(out))
                 }
 
-                fn hard_eval_fuzz_op_if_supported(_op: FuzzOp<Self>) -> Option<Self> {
-                    None $(.or(Some(
-                        Self(_op.map(|Self(x)| <$hard_float_ty>::from_bits(x)).eval_hard().to_bits())
-                    )))?
+                #[allow(unused_variables)]
+                fn host_eval_fuzz_op_if_supported(
+                    op: Op, rm: Round, a: Self, b: Self, c: Self
+                ) -> Option<StatusAnd<Self>> {
+                    None $(.or(
+                        Some(eval_host::<$hard_float_ty>(op, rm, a.0, b.0, c.0)?.map(Self))
+                    ))?
+                }
+
+                fn host_supports_fp_env() -> bool {
+                    false $(|| <$hard_float_ty>::SUPPORTS_FP_ENV)?
+                }
+            }
+
+            impl fmt::Debug for $name {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    write!(f, "{:#0width$x}", self.0, width=(Self::BIT_WIDTH / 4))
                 }
             }
 
@@ -197,7 +295,7 @@ macro_rules! float_reprs {
                 // printing bug specific to `rustc_apfloat`, but we only use
                 // this for printing the "human-friendly" representation, with
                 // the underlying bit-pattern being the actual trusted value.
-                <Self as FloatRepr>::RustcApFloat::from_bits(self.to_bits_u128()).fmt(f)
+                self.to_ap().fmt(f)
             }
         }
     };
@@ -212,658 +310,1083 @@ macro_rules! float_reprs {
     }
 }
 
+// FIXME: missing PowerPC semantics
 float_reprs! {
     Ieee16(u16) {
         type RustcApFloat = rustc_apfloat::ieee::Half;
-        extern fn = cxx_apf_fuzz_eval_op_ieee16;
+        extern fn = cxx_apf_eval_op_ieee16;
     }
     Ieee32(u32) {
         type RustcApFloat = rustc_apfloat::ieee::Single;
-        extern fn = cxx_apf_fuzz_eval_op_ieee32;
+        extern fn = cxx_apf_eval_op_ieee32;
         type HardFloat = f32;
     }
     Ieee64(u64) {
         type RustcApFloat = rustc_apfloat::ieee::Double;
-        extern fn = cxx_apf_fuzz_eval_op_ieee64;
+        extern fn = cxx_apf_eval_op_ieee64;
         type HardFloat = f64;
     }
     Ieee128(u128) {
         type RustcApFloat = rustc_apfloat::ieee::Quad;
-        extern fn = cxx_apf_fuzz_eval_op_ieee128;
+        extern fn = cxx_apf_eval_op_ieee128;
     }
 
     // Non-standard IEEE-like formats.
     F8E5M2(u8) {
         type RustcApFloat = rustc_apfloat::ieee::Float8E5M2;
-        const REPR_TAG = 8 + 0;
-        extern fn = cxx_apf_fuzz_eval_op_f8e5m2;
+        extern fn = cxx_apf_eval_op_f8e5m2;
+    }
+    F8E5M2FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E5M2FNUZ;
+        extern fn = cxx_apf_eval_op_f8e5m2fnuz;
     }
     F8E4M3FN(u8) {
         type RustcApFloat = rustc_apfloat::ieee::Float8E4M3FN;
-        const REPR_TAG = 8 + 1;
-        extern fn = cxx_apf_fuzz_eval_op_f8e4m3fn;
+        extern fn = cxx_apf_eval_op_f8e4m3fn;
+    }
+    F8E4M3FNUZ(u8) {
+        type RustcApFloat = rustc_apfloat::ieee::Float8E4M3FNUZ;
+        extern fn = cxx_apf_eval_op_f8e4m3fnuz;
     }
     BrainF16(u16) {
         type RustcApFloat = rustc_apfloat::ieee::BFloat;
-        const REPR_TAG = 16 + 1;
-        extern fn = cxx_apf_fuzz_eval_op_brainf16;
+        extern fn = cxx_apf_eval_op_brainf16;
     }
     X87_F80(u128) {
         type RustcApFloat = rustc_apfloat::ieee::X87DoubleExtended;
-        extern fn = cxx_apf_fuzz_eval_op_x87_f80;
+        extern fn = cxx_apf_eval_op_x87_f80;
     }
 }
 
-struct FuzzOpEvalOutputs<F: FloatRepr> {
-    rs_apf: F,
-    cxx_apf: Option<F>,
-    hard: Option<F>,
+pub(crate) use for_each_repr;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, FromPrimitive, ToPrimitive)]
+pub enum FpKind {
+    // The tag is based on the bit count. These are specified so corpus inputs are stable.
+    Ieee16 = 16,
+    Ieee32 = 32,
+    Ieee64 = 64,
+    Ieee128 = 128,
+    F8E5M2 = 8,
+    F8E5M2FNUZ = 8 + 2,
+    F8E4M3FN = 8 + 1,
+    F8E4M3FNUZ = 8 + 3,
+    BrainF16 = 16 + 1,
+    #[allow(non_camel_case_types)]
+    X87_F80 = 80,
+}
+
+impl FpKind {
+    #[cfg_attr(not(test), expect(unused))]
+    const ALL: &[Self] = &[
+        Self::Ieee16,
+        Self::Ieee32,
+        Self::Ieee64,
+        Self::Ieee128,
+        Self::F8E5M2,
+        Self::F8E5M2FNUZ,
+        Self::F8E4M3FN,
+        Self::F8E4M3FNUZ,
+        Self::BrainF16,
+        Self::X87_F80,
+    ];
+}
+
+/// A testable operation, which can be encoded as a byte.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, FromPrimitive, ToPrimitive)]
+pub enum Op {
+    Neg = 0,
+    Add = 1,
+    Sub = 2,
+    Mul = 3,
+    Div = 4,
+    Rem = 5,
+    MulAdd = 6,
+    FToI128ToF = 7,
+    FToU128ToF = 8,
+    FToSingleToF = 9,
+    FToDoubleToF = 10,
+    Sqrt = 11,
+}
+
+impl Op {
+    pub const ALL: &[Self] = &[
+        Self::Neg,
+        Self::Add,
+        Self::Sub,
+        Self::Mul,
+        Self::Div,
+        Self::Rem,
+        Self::MulAdd,
+        Self::FToI128ToF,
+        Self::FToU128ToF,
+        Self::FToSingleToF,
+        Self::FToDoubleToF,
+    ];
+
+    pub fn airity(self) -> Arity {
+        match self {
+            Op::Neg => Arity::Unary,
+            Op::Add => Arity::Binary,
+            Op::Sub => Arity::Binary,
+            Op::Mul => Arity::Binary,
+            Op::Div => Arity::Binary,
+            Op::Rem => Arity::Binary,
+            Op::MulAdd => Arity::Ternary,
+            Op::FToI128ToF => Arity::Unary,
+            Op::FToU128ToF => Arity::Unary,
+            Op::FToSingleToF => Arity::Unary,
+            Op::FToDoubleToF => Arity::Unary,
+            Self::Sqrt => Arity::Binary,
+        }
+    }
+}
+
+/// Number of inputs to an operation.
+#[derive(Copy, Clone, Debug)]
+pub enum Arity {
+    Unary = 1,
+    Binary = 2,
+    Ternary = 3,
+}
+/// Errors from improperly formed inputs that cause an exit from the fuzzer but do not raise
+/// a test failing error.
+#[derive(Clone, Copy, Debug)]
+enum DecodeError {
+    LenShorterThan(u8, Option<u16>),
+    LenNotExactly(u8, Option<u16>),
+    InvalidOpcode(u8),
+    InvalidKind(u8),
+    InvalidRound(u8),
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DecodeError::LenShorterThan(exp, act) => write!(
+                f,
+                "invalid length; expected at least {exp} bytes, got {act:?}"
+            ),
+            DecodeError::LenNotExactly(exp, act) => {
+                write!(f, "invalid length; expected {exp} bytes, got {act:?}")
+            }
+            DecodeError::InvalidOpcode(v) => write!(f, "invalid opcode {v:#04x}"),
+            DecodeError::InvalidKind(v) => write!(f, "invalid opcode {v:#04x}"),
+            DecodeError::InvalidRound(v) => write!(f, "invalid opcode {v:#04x}"),
+        }
+    }
+}
+
+/// Context for when a check fails.
+#[derive(Clone, Debug)]
+struct CheckError(Box<(EvalCfg, ResultSummary)>);
+
+impl fmt::Display for CheckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cfg {:?} results {:?}", self.0.0, self.0.1)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Error {
+    Decode(DecodeError),
+    Check(CheckError),
+}
+
+impl From<DecodeError> for Error {
+    fn from(value: DecodeError) -> Self {
+        Self::Decode(value)
+    }
+}
+
+impl From<CheckError> for Error {
+    fn from(value: CheckError) -> Self {
+        Self::Check(value)
+    }
+}
+
+/// Configuration for the current operation.
+#[derive(Debug, Clone)]
+struct EvalCfg {
+    kind: FpKind,
+    op: Op,
+    rm: Round,
+    run_cxx: bool,
+    run_host: bool,
+    ignore_cxx: Option<&'static str>,
+    ignore_cxx_status: Option<&'static str>,
+    cli_strict_host_nan_sign: bool,
+    cli_strict_host_nan_input_choice: bool,
+    cli_ignore_fma_nan_generate_vs_propagate: bool,
+}
+
+impl EvalCfg {
+    fn new(kind: FpKind, op: Op, rm: Round, cli_args: &Args) -> Self {
+        let mut ret = Self {
+            kind,
+            op,
+            rm,
+            run_cxx: !cli_args.ignore_cxx,
+            run_host: !cli_args.ignore_hard,
+            ignore_cxx: None,
+            ignore_cxx_status: None,
+            cli_strict_host_nan_sign: false,
+            cli_strict_host_nan_input_choice: false,
+            cli_ignore_fma_nan_generate_vs_propagate: false,
+        };
+
+        // FIXME: these are XFAILS / ignores and should periodically be reviewed
+        if ret.kind == FpKind::X87_F80 {
+            // LLVM never seems to set INVALID
+            ret.ignore_cxx_status = Some("LLVM does not set INVALID on X87_F80")
+        }
+        // FIXME(f8): We often disagree with LLVM, more research is neeed to see which
+        // implementation is correct.
+        if matches!(ret.kind, FpKind::F8E4M3FN | FpKind::F8E4M3FNUZ) {
+            ret.ignore_cxx = Some("f8e4m3fn may be broken");
+            if op == Op::MulAdd {
+                // Don't even run for FMA which crashes in LLVM
+                ret.run_cxx = false;
+            }
+        }
+        if matches!(ret.kind, FpKind::F8E5M2 | FpKind::F8E5M2FNUZ) {
+            ret.ignore_cxx = Some("f8e5m2 may be broken");
+        }
+
+        // Apply CLI config
+        ret.cli_strict_host_nan_sign |= cli_args.strict_hard_nan_sign;
+        ret.cli_strict_host_nan_input_choice |= cli_args.strict_hard_nan_input_choice;
+        ret.cli_ignore_fma_nan_generate_vs_propagate |=
+            cli_args.ignore_fma_nan_generate_vs_propagate;
+
+        ret
+    }
+
+    /// Extract from a blob with CLI overrides. Return the decoded config and the remaining
+    /// bytestream.
+    fn decode<'a>(data: &'a [u8], cli_args: &Args) -> Result<(EvalCfg, &'a [u8]), DecodeError> {
+        let Some((&[kind_tag, op_tag, rm_tag], rest)) = data.split_first_chunk() else {
+            return Err(DecodeError::LenShorterThan(3, data.len().try_into().ok()));
+        };
+
+        let Some(kind) = FpKind::from_u8(kind_tag) else {
+            return Err(DecodeError::InvalidKind(op_tag));
+        };
+
+        let Some(op) = Op::from_u8(op_tag) else {
+            return Err(DecodeError::InvalidOpcode(op_tag));
+        };
+
+        let Some(rm) = round_from_u8(rm_tag) else {
+            return Err(DecodeError::InvalidRound(op_tag));
+        };
+
+        let ret = EvalCfg::new(kind, op, rm, cli_args);
+        Ok((ret, rest))
+    }
+}
+
+/// Decode and evaluate all passed files without exiting on mismatches.
+fn run_decode_subcmd(files: &[PathBuf], cli_args: &Args) {
+    let mut buf = Vec::new();
+    for path in files {
+        if path.file_name().unwrap_or_default() == "README.txt" {
+            // AFL creates README files in each directory
+            println!("{}: skipping README file", path.display());
+            continue;
+        }
+
+        println!("{}{}:{}", term().dim, path.display(), term().rst);
+
+        buf.clear();
+        let mut f = fs::File::open(path).unwrap();
+        f.read_to_end(&mut buf).unwrap();
+
+        match decode_eval_check(&buf, cli_args, true) {
+            Ok(()) => (),
+            Err(Error::Decode(e)) => println!("error decoding file: {e}"),
+            // No need to print anything extra, we already get the mismatch messages.
+            Err(Error::Check(_e)) => (),
+        }
+    }
+}
+
+/// Main runner: decode a config, inputs based on that config, and then evaluate the results
+/// for Rust, LLVM APFloat, and the host.
+fn decode_eval_check(data: &[u8], cli_args: &Args, always_print: bool) -> Result<(), Error> {
+    let (cfg, data) = EvalCfg::decode(data, cli_args)?;
+    match cfg.kind {
+        FpKind::Ieee16 => {
+            let (a, b, c, r) = decode_for_ty_eval::<Ieee16>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::Ieee32 => {
+            let (a, b, c, r) = decode_for_ty_eval::<Ieee32>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::Ieee64 => {
+            let (a, b, c, r) = decode_for_ty_eval::<Ieee64>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::Ieee128 => {
+            let (a, b, c, r) = decode_for_ty_eval::<Ieee128>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::F8E5M2 => {
+            let (a, b, c, r) = decode_for_ty_eval::<F8E5M2>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::F8E5M2FNUZ => {
+            let (a, b, c, r) = decode_for_ty_eval::<F8E5M2FNUZ>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::F8E4M3FN => {
+            let (a, b, c, r) = decode_for_ty_eval::<F8E4M3FN>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::F8E4M3FNUZ => {
+            let (a, b, c, r) = decode_for_ty_eval::<F8E4M3FNUZ>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::BrainF16 => {
+            let (a, b, c, r) = decode_for_ty_eval::<BrainF16>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+        FpKind::X87_F80 => {
+            let (a, b, c, r) = decode_for_ty_eval::<X87_F80>(&cfg, data)?;
+            r.check_all(&cfg, a, b, c, always_print)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Decode operands for a given type and operation, then evaluate.
+fn decode_for_ty_eval<F: FloatRepr>(
+    cfg: &EvalCfg,
+    data: &[u8],
+) -> Result<(F, F, F, FuzzOpEvalOutputs<F>), DecodeError>
+where
+    Single: FloatConvert<<F as FloatRepr>::RustcApFloat>,
+    Double: FloatConvert<<F as FloatRepr>::RustcApFloat>,
+{
+    let (a, b, c) = decode_operands::<F>(cfg.op, data)?;
+    let r = eval_all(cfg, a, b, c);
+    Ok((a, b, c, r))
+}
+
+#[must_use]
+fn eval_all<F: FloatRepr>(cfg: &EvalCfg, a: F, b: F, c: F) -> FuzzOpEvalOutputs<F>
+where
+    Single: FloatConvert<<F as FloatRepr>::RustcApFloat>,
+    Double: FloatConvert<<F as FloatRepr>::RustcApFloat>,
+{
+    // Evaluate the APFloat version as well as all possible references.
+    FuzzOpEvalOutputs {
+        rs_apf: eval_rust_ap(cfg.op, cfg.rm, a, b, c),
+        cxx_apf: cfg
+            .run_cxx
+            .then(|| F::cxx_apf_eval_fuzz_op(cfg.op, cfg.rm, a, b, c)),
+        host: cfg
+            .run_host
+            .then(|| F::host_eval_fuzz_op_if_supported(cfg.op, cfg.rm, a, b, c))
+            .flatten(),
+    }
+}
+
+/// Given a N-arity opcode, decode N `F`s from `data` and return zero in any remaining
+/// positions.
+fn decode_operands<F: FloatRepr>(op: Op, data: &[u8]) -> Result<(F, F, F), DecodeError> {
+    let arity = op.airity() as usize;
+    let req_len = arity * F::BYTE_LEN;
+    if data.len() != req_len {
+        return Err(DecodeError::LenNotExactly(
+            req_len.try_into().unwrap(),
+            data.len().try_into().ok(),
+        ));
+    }
+
+    let mut ret: (F, F, F) = Default::default();
+    ret.0 = F::from_le_bytes(&data[..F::BYTE_LEN]);
+    if arity > 1 {
+        ret.1 = F::from_le_bytes(&data[F::BYTE_LEN..(F::BYTE_LEN * 2)]);
+    }
+    if arity > 2 {
+        ret.2 = F::from_le_bytes(&data[(F::BYTE_LEN * 2)..(F::BYTE_LEN * 3)]);
+    }
+
+    Ok(ret)
+}
+
+/// Collected outputs from all input sources.
+#[derive(Clone, Debug)]
+struct FuzzOpEvalOutputs<F> {
+    rs_apf: StatusAnd<F>,
+    cxx_apf: Option<StatusAnd<F>>,
+    host: Option<StatusAnd<F>>,
+}
+
+#[derive(Clone, Debug)]
+struct ResultSummary {
+    cxx_error: bool,
+    cxx_ignore: Option<&'static str>,
+    cxx_stat_error: bool,
+    cxx_stat_ignore: Option<&'static str>,
+    host_error: bool,
+    host_ignore: Option<&'static str>,
+    host_stat_error: bool,
+    host_stat_ignore: Option<&'static str>,
 }
 
 impl<F: FloatRepr> FuzzOpEvalOutputs<F> {
-    fn all_match(self) -> bool {
-        [self.cxx_apf, self.hard]
-            .into_iter()
-            .flatten()
-            .all(|x| x == self.rs_apf)
+    /// Validate that outputs are correct. Pass `always_print` for decoding use where we want to
+    /// see the output regardless of whether or not it is a failure.
+    fn check_all(
+        &self,
+        cfg: &EvalCfg,
+        a: F,
+        b: F,
+        c: F,
+        always_print: bool,
+    ) -> Result<(), CheckError> {
+        let print_float = |x: StatusAnd<F>,
+                           label,
+                           error,
+                           stat_error,
+                           ignore: Option<&str>,
+                           ignore_stat: Option<&str>| {
+            print!(
+                "   => {:?} {:?} ({label})",
+                FloatPrintHelper(x.value),
+                x.status
+            );
+            if error {
+                let c = if ignore.is_some() {
+                    term().yel_b
+                } else {
+                    term().red_b
+                };
+                print!(" <- {c}!!! MISMATCH ");
+                if let Some(reason) = ignore {
+                    print!("(ignored, {reason}) ");
+                }
+                print!("!!!{}", term().rst);
+            } else if stat_error {
+                let c = if ignore.is_some() {
+                    term().yel_b
+                } else {
+                    term().red_b
+                };
+                print!(" <- {c}!!! STATUS MISMATCH ");
+                if let Some(reason) = ignore_stat {
+                    print!("(ignored, {reason}) ");
+                }
+                print!("!!!{}", term().rst);
+            }
+
+            println!();
+        };
+
+        let mut res = ResultSummary {
+            cxx_error: false,
+            cxx_ignore: cfg.ignore_cxx,
+            cxx_stat_error: false,
+            cxx_stat_ignore: cfg.ignore_cxx_status,
+            host_error: false,
+            host_ignore: None,
+            host_stat_error: false,
+            host_stat_ignore: (!F::host_supports_fp_env()).then_some("host does not support fpenv"),
+        };
+
+        if let Some(cxx_res) = self.cxx_apf {
+            res.cxx_error = self.rs_apf.value != cxx_res.value;
+            res.cxx_stat_error = self.rs_apf.status != cxx_res.status;
+            res.cxx_ignore = res
+                .cxx_ignore
+                .or_else(|| ignore_cxx(cfg, a, b, c, self.rs_apf.value, cxx_res.value));
+            res.cxx_stat_ignore = res
+                .cxx_stat_ignore
+                .or_else(|| ignore_cxx_status(cfg, a, b, c, self.rs_apf, cxx_res));
+        }
+
+        if let Some(host_res) = self.host {
+            res.host_error = self.rs_apf.value != host_res.value;
+            res.host_stat_error = self.rs_apf.status != host_res.status;
+            res.host_ignore = res
+                .host_ignore
+                .or_else(|| ignore_host(cfg, a, b, c, self.rs_apf.value, host_res.value));
+            res.host_stat_ignore = res
+                .host_stat_ignore
+                .or_else(|| ignore_host_status(cfg, a, b, c, self.rs_apf, host_res));
+        }
+
+        let failure = (res.cxx_error && res.cxx_ignore.is_none())
+            || (res.cxx_stat_error && res.cxx_ignore.is_none() && res.cxx_stat_ignore.is_none())
+            || (res.host_error && res.host_ignore.is_none())
+            || (res.host_stat_error && res.host_ignore.is_none() && res.host_stat_ignore.is_none());
+
+        if always_print || failure {
+            print!("  {}.{:?}(", F::short_lowercase_name(), cfg.op,);
+
+            let airity = cfg.op.airity() as u8;
+            print!("{:?}", FloatPrintHelper(a));
+            if airity > 1 {
+                print!(", {:?}", FloatPrintHelper(b));
+            }
+            if airity > 2 {
+                print!(", {:?}", FloatPrintHelper(c));
+            }
+            println!(", {:?})", cfg.rm);
+
+            print_float(
+                self.rs_apf,
+                "Rust / rustc_apfloat",
+                false,
+                false,
+                None,
+                None,
+            );
+            if let Some(cxx_res) = self.cxx_apf {
+                print_float(
+                    cxx_res,
+                    "C++ / llvm::APFloat",
+                    res.cxx_error,
+                    res.cxx_stat_error,
+                    res.cxx_ignore,
+                    res.cxx_stat_ignore,
+                );
+            }
+            if let Some(host_res) = self.host {
+                print_float(
+                    host_res,
+                    "native host floats",
+                    res.host_error,
+                    res.host_stat_error,
+                    res.host_ignore,
+                    res.host_stat_ignore,
+                );
+            }
+        }
+
+        if failure {
+            Err(CheckError(Box::new((cfg.clone(), res))))
+        } else {
+            Ok(())
+        }
     }
 }
 
-impl<F: FloatRepr> FuzzOp<F>
-// FIXME(eddyb) such bounds shouldn't be here, but `FloatRepr` can't imply them.
-where
-    rustc_apfloat::ieee::Single: rustc_apfloat::FloatConvert<F::RustcApFloat>,
-    rustc_apfloat::ieee::Double: rustc_apfloat::FloatConvert<F::RustcApFloat>,
-{
-    fn try_decode(data: &[u8]) -> Result<Self, ()> {
-        let (&tag, inputs) = data.split_first().ok_or(())?;
-        if inputs.len() % F::BYTE_LEN != 0 {
-            return Err(());
-        }
-
-        let mut inputs = inputs.chunks(F::BYTE_LEN).map(F::from_le_bytes);
-        let mut too_few_inputs = false;
-        let op = FuzzOp::from_tag(tag).ok_or(())?.map(|()| {
-            inputs.next().unwrap_or_else(|| {
-                too_few_inputs = true;
-                F::default()
-            })
-        });
-        if too_few_inputs || inputs.next().is_some() {
-            return Err(());
-        }
-        Ok(op)
+/// Return `Some(reason)` if we can ignore mismatches against the host, `None` otherwise.
+fn ignore_cxx<F: FloatRepr>(
+    cfg: &EvalCfg,
+    a: F,
+    _b: F,
+    _c: F,
+    rs_apf: F,
+    cxx_res: F,
+) -> Option<&'static str> {
+    let rs_apf_bits = rs_apf.to_bits_u128();
+    let cxx_bits = cxx_res.to_bits_u128();
+    if rs_apf_bits == cxx_bits {
+        return None;
     }
 
-    // FIXME(eddyb) add `seed` subcommand using this method, and a set
-    // of basic examples, e.g. every `FuzzOp` variant with `0.0` for all inputs
-    // (and/or maybe testcases from known and/or fixed bugs, too).
-    #[allow(unused)]
-    fn encode_into(self, out_bytes: &mut Vec<u8>) {
-        out_bytes.push(self.tag());
-        self.map(|x| x.write_as_le_bytes_into(out_bytes));
-    }
+    let Masks { qnan_bit_mask, .. } = Masks::for_float::<F>();
 
-    fn eval(self, cli_args: &Args) -> FuzzOpEvalOutputs<F> {
-        let mut out = FuzzOpEvalOutputs {
-            rs_apf: F::from_bits_u128(
-                self.map(F::to_bits_u128)
-                    .map(F::RustcApFloat::from_bits)
-                    .eval_rs_apf()
-                    .to_bits(),
-            ),
-            cxx_apf: if !cli_args.ignore_cxx {
-                Some(F::cxx_apf_eval_fuzz_op(self))
-            } else {
-                None
-            },
-            hard: if !cli_args.ignore_hard {
-                F::hard_eval_fuzz_op_if_supported(self)
-            } else {
-                None
-            },
-        };
-
-        out.hard = out.hard.map(|out_hard| {
-            let mut out_hard_bits = out_hard.to_bits_u128();
-
-            // HACK(eddyb) to avoid putting this behind a `HasHardFloat` bound,
-            // we hardcode some aspects of the IEEE binary float representation,
-            // relying on `rustc_apfloat`-provided constants as a source of truth.
-            let sign_bit_mask = 1 << (F::BIT_WIDTH - 1);
-            let exp_mask = F::RustcApFloat::INFINITY.to_bits();
-            let sig_mask = (1 << exp_mask.trailing_zeros()) - 1;
-            assert_eq!(
-                sign_bit_mask | exp_mask | sig_mask,
-                !0 >> (128 - F::BIT_WIDTH)
-            );
-            assert!((sig_mask + 1).is_power_of_two());
-            assert!(((exp_mask | sig_mask) + 1).is_power_of_two());
-            assert_eq!(
-                sign_bit_mask.count_ones() + exp_mask.count_ones() + sig_mask.count_ones(),
-                F::BIT_WIDTH as u32
-            );
-            let qnan_bit_mask = (sig_mask + 1) >> 1;
-            assert!(qnan_bit_mask.is_power_of_two());
-            assert_eq!(exp_mask | qnan_bit_mask, F::RustcApFloat::NAN.to_bits());
-
-            let is_nan = |bits| {
-                let is_nan = (bits & exp_mask) == exp_mask && (bits & sig_mask) != 0;
-                assert_eq!(F::RustcApFloat::from_bits(bits).is_nan(), is_nan);
-                is_nan
-            };
-
-            // Allow using CLI flags to toggle whether differences vs hardware are
-            // erased (by copying e.g. signs from the `rustc_apfloat` result) or kept.
-            // FIXME(eddyb) figure out how much we can really validate against hardware.
-            let mut strict_nan_bits_mask = !0;
-            if !cli_args.strict_hard_nan_sign {
-                strict_nan_bits_mask &= !sign_bit_mask;
-            };
-
-            let rs_apf_bits = out.rs_apf.to_bits_u128();
-            if is_nan(out_hard_bits) && is_nan(rs_apf_bits) {
-                out_hard_bits &= strict_nan_bits_mask;
-                out_hard_bits |= rs_apf_bits & !strict_nan_bits_mask;
-
-                // There is still a NaN payload difference, check if they both
-                // are propagated inputs (verbatim or at most "quieted" if SNaN),
-                // because in some cases with multiple NaN inputs, something
-                // (hardware or even e.g. LLVM passes or instruction selection)
-                // along the way from Rust code to final results, can end up
-                // causing a different input NaN to get propagated to the result.
-                if !cli_args.strict_hard_nan_input_choice && out_hard_bits != rs_apf_bits {
-                    let out_nan_is_propagated_input = |out_nan_bits| {
-                        assert!(is_nan(out_nan_bits));
-                        let mut found_any_matching_inputs = false;
-                        self.map(F::to_bits_u128).map(|in_bits| {
-                            // NOTE(eddyb) this `is_nan` check is important, as
-                            // `INFINITY.to_bits() | qnan_bit_mask == NAN.to_bits()`,
-                            // i.e. seeting the QNaN is more than enough to turn
-                            // a non-NaN (infinities, specifically) into a NaN.
-                            if is_nan(in_bits) {
-                                // Make sure to "quiet" (i.e. turn SNaN into QNaN)
-                                // the input first, as propagation does (in the
-                                // default exception handling mode, at least).
-                                if (in_bits | qnan_bit_mask) & strict_nan_bits_mask
-                                    == out_nan_bits & strict_nan_bits_mask
-                                {
-                                    found_any_matching_inputs = true;
-                                }
-                            }
-                        });
-                        found_any_matching_inputs
-                    };
-                    if out_nan_is_propagated_input(out_hard_bits)
-                        && out_nan_is_propagated_input(rs_apf_bits)
-                    {
-                        out_hard_bits = rs_apf_bits;
-                    }
-                }
-
-                // HACK(eddyb) last chance to hide a NaN payload difference,
-                // in this case for FMAs of the form `a * b + NaN`, when `a * b`
-                // generates a new NaN (which hardware can ignore in favor of the
-                // existing NaN, but APFloat returns the fresh new NaN instead).
-                if cli_args.ignore_fma_nan_generate_vs_propagate && out_hard_bits != rs_apf_bits {
-                    if let FuzzOp::MulAdd(a, b, c) = self.map(F::to_bits_u128) {
-                        if !is_nan(a)
-                            && !is_nan(b)
-                            && is_nan(c)
-                            && out_hard_bits & strict_nan_bits_mask
-                                == (c | qnan_bit_mask) & strict_nan_bits_mask
-                            && rs_apf_bits == F::RustcApFloat::NAN.to_bits()
-                        {
-                            out_hard_bits = rs_apf_bits;
-                        }
-                    }
-                }
-            }
-
-            F::from_bits_u128(out_hard_bits)
-        });
-
-        out
-    }
-
-    fn print_op_and_eval_outputs(self, cli_args: &Args) {
-        fn if_terminal<T: Default>(x: T) -> T {
-            use std::io::IsTerminal;
-            thread_local! {
-                static STDOUT_IS_TERMINAL: bool = std::io::stdout().is_terminal();
-            }
-            if STDOUT_IS_TERMINAL.with(|&t| t) {
-                x
-            } else {
-                T::default()
-            }
-        }
-
-        struct FloatPrintHelper<F: FloatRepr>(F);
-        impl<F: FloatRepr> fmt::Debug for FloatPrintHelper<F> {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(
-                    f,
-                    "{c_yellow}0x{:0hex_width$x}{c_normal} {c_grey}/* {} */{c_normal}",
-                    self.0.to_bits_u128(),
-                    self.0,
-                    hex_width = F::BYTE_LEN * 2,
-                    c_normal = if_terminal("\x1b[m"),
-                    c_yellow = if_terminal("\x1b[93m"),
-                    c_grey = if_terminal("\x1b[90m"),
-                )
-            }
-        }
-
-        println!(
-            "  {}.{:?}",
-            F::short_lowercase_name(),
-            self.map(FloatPrintHelper)
-        );
-
-        // HACK(eddyb) this lets us show all files even if some cause panics.
-        let FuzzOpEvalOutputs {
-            rs_apf,
-            cxx_apf,
-            hard,
-        } = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.eval(cli_args))) {
-            Ok(out) => out,
-            Err(_) => {
-                // HACK(eddyb) this tries to reproduce assertion failures in C++.
-                if !cli_args.ignore_cxx {
-                    F::cxx_apf_eval_fuzz_op(self);
-                }
-                return;
-            }
-        };
-        let print = |x, label| {
-            print!("   => {:?} ({label})", FloatPrintHelper(x));
-            if x != rs_apf {
-                print!(
-                    " <- {c_bold_red}!!! MISMATCH !!!{c_normal}",
-                    c_normal = if_terminal("\x1b[m"),
-                    c_bold_red = if_terminal("\x1b[1m\x1b[91m"),
-                )
-            }
-            println!();
-        };
-        print(rs_apf, "Rust / rustc_apfloat");
-        cxx_apf.map(|x| print(x, "C++ / llvm::APFloat"));
-        hard.map(|x| print(x, "native hardware floats"));
-    }
-
-    /// [`Commands::Bruteforce`] implementation (for a specific choice of `F`),
-    /// returning `Err(mismatch_count)` if there were any mismatches.
-    //
-    // HACK(eddyb) this is a method here because of the bounds `eval` needs, which
-    // are thankfully on the whole `impl`, so `Self::eval` is callable.
-    fn bruteforce(cli_args: &Args) -> Result<(), NonZeroUsize>
-    where
-        F: Send + 'static,
+    // For the F1->F2->F1 conversions where F1 and F2 are the same type, it seems like LLVM
+    // doesn't actually do a conversion which means that sNaNs do not wind up quiet.
+    if ((cfg.kind == FpKind::Ieee32 && cfg.op == Op::FToSingleToF)
+        || (cfg.kind == FpKind::Ieee64 && cfg.op == Op::FToDoubleToF))
+        && a.to_ap().is_signaling()
+        && (cxx_bits | qnan_bit_mask) == rs_apf_bits
     {
-        let Some(Commands::Bruteforce {
-            min_width,
-            max_width,
-            verbose,
-            only_non_trivial_fma,
-        }) = cli_args.command
-        else {
-            unreachable!("bruteforce({cli_args:?}): subcommand not `Commands::Bruteforce`");
-        };
-
-        if !(min_width..=max_width).contains(&F::BIT_WIDTH) {
-            return Ok(());
-        }
-
-        // HACK(eddyb) there is a good chance C++ will also fail, so avoid the
-        // (more fatal) C++ assertion failure, via `print_op_and_eval_outputs`.
-        let cli_args_plus_ignore_cxx = Args {
-            ignore_cxx: true,
-            ..cli_args.clone()
-        };
-
-        let all_ops = (0..)
-            .map(FuzzOp::from_tag)
-            .take_while(|op| op.is_some())
-            .map(|op| op.unwrap())
-            .filter(move |op| {
-                if only_non_trivial_fma {
-                    matches!(op, FuzzOp::MulAdd(..))
-                } else {
-                    true
-                }
-            });
-
-        let op_to_combined_input_bits_range = move |op: FuzzOp<()>| {
-            let mut total_bit_width = 0;
-            op.map(|()| total_bit_width += F::BIT_WIDTH);
-
-            // HACK(eddyb) the highest `F::BIT_WIDTH` bits are the last input,
-            // i.e. the addend for FMA (see also `Commands::Bruteforce` docs).
-            let start_combined_input_bits = if only_non_trivial_fma {
-                1 << (total_bit_width - F::BIT_WIDTH)
-            } else {
-                0
-            };
-
-            start_combined_input_bits..u128::checked_shl(1, total_bit_width as u32).unwrap()
-        };
-        let op_to_exhaustive_cases = move |op: FuzzOp<()>| {
-            op_to_combined_input_bits_range(op).map(move |i| -> Self {
-                let mut combined_input_bits = i;
-                let op_with_inputs = op.map(|()| {
-                    let x = combined_input_bits & ((1 << F::BIT_WIDTH) - 1);
-                    combined_input_bits >>= F::BIT_WIDTH;
-                    F::from_bits_u128(x)
-                });
-                assert_eq!(combined_input_bits, 0);
-                op_with_inputs
-            })
-        };
-
-        let num_total_cases = all_ops
-            .clone()
-            .map(|op| {
-                let range = op_to_combined_input_bits_range(op);
-                range.end.checked_sub(range.start).unwrap()
-            })
-            .try_fold(0, u128::checked_add)
-            .unwrap();
-
-        let float_name = F::short_lowercase_name();
-        println!("Exhaustively checking {num_total_cases} cases for {float_name}:");
-
-        // HACK(eddyb) show some indication of progress at least every few seconds,
-        // but also don't show verbose progress as often, with fewer testcases.
-        let num_dots = usize::try_from(num_total_cases >> 23)
-            .unwrap_or(usize::MAX)
-            .max(if verbose { 10 } else { 40 });
-        let cases_per_dot =
-            usize::try_from(num_total_cases / u128::try_from(num_dots).unwrap()).unwrap();
-
-        // Spawn worker threads and only report back from them once in a while
-        // (in large batches of successes), or in case of any failure.
-        let num_threads = std::thread::available_parallelism().unwrap();
-        let successes_batch_size = (cases_per_dot / num_threads).next_power_of_two();
-
-        struct Update<T> {
-            successes: usize,
-            mismatch_or_panic: Option<(T, Option<Box<dyn std::any::Any + Send>>)>,
-        }
-        impl<T> Default for Update<T> {
-            fn default() -> Self {
-                Update {
-                    successes: 0,
-                    mismatch_or_panic: None,
-                }
-            }
-        }
-        let (updates_tx, updates_rx) = std::sync::mpsc::channel();
-
-        // HACK(eddyb) avoid reporting panics while iterating.
-        std::panic::set_hook(Box::new(|_| {}));
-
-        let worker_threads: Vec<_> = (0..num_threads.get())
-            .map(|thread_idx| {
-                let cli_args = cli_args.clone();
-                let updates_tx = updates_tx.clone();
-                let cases_per_thread = all_ops
-                    .clone()
-                    .flat_map(op_to_exhaustive_cases)
-                    .skip(thread_idx)
-                    .step_by(num_threads.get());
-                std::thread::spawn(move || {
-                    let mut update = Update::default();
-                    for op_with_inputs in cases_per_thread {
-                        // HACK(eddyb) there are still panics we need to account for,
-                        // e.g. https://github.com/llvm/llvm-project/issues/63895, and
-                        // even if the Rust code didn't panic, LLVM asserts would trip.
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            op_with_inputs.eval(&cli_args)
-                        })) {
-                            Ok(out) => {
-                                if out.all_match() {
-                                    update.successes += 1;
-                                } else {
-                                    update.mismatch_or_panic = Some((op_with_inputs, None));
-                                }
-                            }
-                            Err(panic) => {
-                                update.mismatch_or_panic = Some((op_with_inputs, Some(panic)));
-                            }
-                        }
-
-                        if update.successes >= successes_batch_size
-                            || update.mismatch_or_panic.is_some()
-                        {
-                            updates_tx.send(mem::take(&mut update)).unwrap();
-                        }
-                    }
-                    updates_tx.send(update).unwrap();
-                })
-            })
-            .collect();
-
-        // HACK(eddyb) ensure that `Sender`s are only tied to active threads,
-        // allowing the `for` loop below to exit, once all worker threads finish.
-        drop(updates_tx);
-
-        let mut case_idx = 0;
-        let mut current_dot_first_case_idx = 0;
-        let mut last_mismatch_case_idx = None;
-        let mut last_panic_case_idx = None;
-        let mut all_mismatches = vec![];
-        let mut all_panics = vec![];
-        let mut verbose_failed_to_show_some_panics = false;
-        for update in updates_rx {
-            let Update {
-                successes,
-                mismatch_or_panic,
-            } = update;
-            let successes_and_failures = [
-                Some(successes).filter(|&n| n > 0).map(Ok),
-                mismatch_or_panic.map(Err),
-            ]
-            .into_iter()
-            .flatten();
-
-            for success_or_failure in successes_and_failures {
-                match success_or_failure {
-                    Ok(successes) => case_idx += successes,
-
-                    Err((op_with_inputs, None)) => {
-                        if verbose {
-                            op_with_inputs.print_op_and_eval_outputs(cli_args);
-                        }
-
-                        last_mismatch_case_idx = Some(case_idx);
-                        all_mismatches.push(op_with_inputs);
-
-                        case_idx += 1;
-                    }
-
-                    Err((op_with_inputs, Some(panic))) => {
-                        if verbose {
-                            op_with_inputs.print_op_and_eval_outputs(&cli_args_plus_ignore_cxx);
-                            if let Ok(msg) = panic.downcast::<String>() {
-                                eprintln!("panicked with: {msg}");
-                            } else {
-                                verbose_failed_to_show_some_panics = true;
-                            }
-                        }
-
-                        last_panic_case_idx = Some(case_idx);
-                        all_panics.push(op_with_inputs);
-
-                        case_idx += 1;
-                    }
-                }
-
-                loop {
-                    let next_dot_first_case_idx = current_dot_first_case_idx + cases_per_dot;
-                    if case_idx < next_dot_first_case_idx {
-                        break;
-                    }
-                    if verbose {
-                        println!(
-                            "  {:3.1}% done ({case_idx} / {num_total_cases}), \
-                           found {} mismatches and {} panics",
-                            (case_idx as f64) / (num_total_cases as f64) * 100.0,
-                            all_mismatches.len(),
-                            all_panics.len()
-                        );
-                    } else {
-                        print!(
-                            "{}",
-                            if last_panic_case_idx.is_some_and(|i| i >= current_dot_first_case_idx)
-                            {
-                                '🕱'
-                            } else if last_mismatch_case_idx
-                                .is_some_and(|i| i >= current_dot_first_case_idx)
-                            {
-                                '≠'
-                            } else {
-                                '.'
-                            }
-                        );
-                        // HACK(eddyb) get around `stdout` line buffering.
-                        std::io::stdout().flush().unwrap();
-                    }
-                    current_dot_first_case_idx = next_dot_first_case_idx;
-                }
-            }
-        }
-        println!();
-
-        // HACK(eddyb) undo what we did just before spawning worker threads.
-        let _ = std::panic::take_hook();
-
-        for worker_thread in worker_threads {
-            worker_thread.join().unwrap();
-        }
-
-        // HACK(eddyb) keep only one mismatch per `FuzzOp` variant.
-        // FIXME(eddyb) consider sorting these (and panics?) due to parallelism.
-        let num_mismatches = all_mismatches.len();
-        let mut select_mismatches = all_mismatches;
-        select_mismatches.dedup_by_key(|op_with_inputs| op_with_inputs.tag());
-
-        if num_mismatches > 0 {
-            println!();
-            println!(
-                "⚠ found {num_mismatches} ({:.1}%) mismatches for {float_name}, showing {} of them:",
-                (num_mismatches as f64) / (num_total_cases as f64) * 100.0,
-                select_mismatches.len(),
-            );
-            for mismatch in select_mismatches {
-                mismatch.print_op_and_eval_outputs(cli_args);
-            }
-        }
-
-        if !all_panics.is_empty() {
-            println!();
-            println!(
-                "⚠ found {} panics for {float_name}, {}",
-                all_panics.len(),
-                if verbose && !verbose_failed_to_show_some_panics {
-                    "shown above"
-                } else {
-                    "showing them (without trying C++):"
-                },
-            );
-            if !verbose || verbose_failed_to_show_some_panics {
-                for &panicking_case in &all_panics {
-                    panicking_case.print_op_and_eval_outputs(&cli_args_plus_ignore_cxx);
-                }
-            }
-        }
-
-        if num_mismatches == 0 && all_panics.is_empty() {
-            println!("✔️ all {num_total_cases} cases match");
-        }
-        println!();
-
-        NonZeroUsize::new(num_mismatches + all_panics.len()).map_or(Ok(()), Err)
+        return Some("unquieted sNaN for same-size float");
     }
+
+    None
 }
 
-fn main() {
-    let cli_args = Args::parse();
+fn ignore_cxx_status<F: FloatRepr>(
+    _cfg: &EvalCfg,
+    _a: F,
+    _b: F,
+    _c: F,
+    _rs_apf: StatusAnd<F>,
+    _cxxt_res: StatusAnd<F>,
+) -> Option<&'static str> {
+    None
+}
 
-    if let Some(cmd) = &cli_args.command {
-        match cmd {
-            Commands::Decode { files } => {
-                for file in files {
-                    println!("{}:", file.display());
-                    let data = std::fs::read(file).unwrap();
-
-                    data.split_first()
-                        .ok_or("empty file")
-                        .and_then(|(&repr_tag, data)| {
-                            dispatch_any_float_repr_by_repr_tag!(match repr_tag {
-                                for<F: FloatRepr> => return Ok(
-                                    FuzzOp::<F>::try_decode(data)
-                                        .ok()
-                                        .ok_or(std::any::type_name::<FuzzOp<F>>())?
-                                        .print_op_and_eval_outputs(&cli_args)
-                                )
-                            });
-                            Err("first byte not valid `FloatRepr::REPR_TAG`")
-                        })
-                        .unwrap_or_else(|e| println!("  invalid data ({e})"));
-                }
-            }
-            Commands::Bruteforce { .. } => {
-                let mut any_mismatches = false;
-                for repr_tag in 0..=u8::MAX {
-                    dispatch_any_float_repr_by_repr_tag!(match repr_tag {
-                        for<F: FloatRepr> => {
-                            any_mismatches |= FuzzOp::<F>::bruteforce(&cli_args).is_err();
-                        }
-                    });
-                }
-                if any_mismatches {
-                    // FIXME(eddyb) use `fn main() -> ExitStatus`.
-                    std::process::exit(1);
-                }
-            }
-        }
-        return;
+/// Return `Some(reason)` if we can ignore mismatches against the host, `None` otherwise.
+fn ignore_host<F: FloatRepr>(
+    cfg: &EvalCfg,
+    a: F,
+    b: F,
+    c: F,
+    rs_apf: F,
+    host_res: F,
+) -> Option<&'static str> {
+    let rs_apf_bits = rs_apf.to_bits_u128();
+    let host_bits = host_res.to_bits_u128();
+    if rs_apf_bits == host_bits {
+        return None;
     }
 
-    #[cfg_attr(not(fuzzing), allow(unused))]
-    let fuzz_one_op = |data: &[u8]| {
-        data.split_first().and_then(|(&repr_tag, data)| {
-            dispatch_any_float_repr_by_repr_tag!(match repr_tag {
-                for<F: FloatRepr> => return Some(
-                    assert!(FuzzOp::<F>::try_decode(data).ok()?.eval(&cli_args).all_match())
-                )
-            });
-            None
-        });
+    let Masks {
+        sign_bit_mask,
+        exp_mask,
+        sig_mask,
+        qnan_bit_mask,
+    } = Masks::for_float::<F>();
+
+    let is_nan = |bits| {
+        let is_nan = (bits & exp_mask) == exp_mask && (bits & sig_mask) != 0;
+        assert_eq!(F::RustcApFloat::from_bits(bits).is_nan(), is_nan);
+        is_nan
     };
 
-    // HACK(eddyb) `#[cfg(fuzzing)] {...}` used instead of `if cfg!(fuzzing) {...}`
-    // because the latter can still cause the `afl` crate to be linked, and it
-    // depends on native libraries that are only available under `cargo afl ...`.
-    #[cfg(fuzzing)]
-    if true {
-        // FIXME(eddyb) make the first argument (panic hook choice) a CLI toggle.
-        afl::fuzz(true, fuzz_one_op);
-
-        return;
+    // Everything else is for handling NaNs.
+    if !(is_nan(host_bits) && is_nan(rs_apf_bits)) {
+        return None;
     }
 
-    // FIXME(eddyb) add better docs for all of this.
-    Args::command().print_long_help().unwrap();
-    eprintln!();
-    eprintln!("To fuzz `rustc_apfloat`, you must use `cargo afl`:");
-    eprintln!(" - `cargo install afl`");
-    eprintln!(" - build with `cargo afl build -p rustc_apfloat-fuzz --release`");
-    // FIXME(eddyb) add `seed` subcommand using `FuzzOp::encode_into`, and a set
-    // of basic examples, e.g. every `FuzzOp` variant with `0.0` for all inputs
-    // (and/or maybe testcases from known and/or fixed bugs, too).
-    eprintln!(" - seed with `mkdir fuzz/in-foo && echo > fuzz/in-foo/empty`");
-    eprintln!(" - run with `cargo afl fuzz -i fuzz/in-foo -o fuzz/out-foo target/release/rustc_apfloat-fuzz`");
-    std::process::exit(1);
+    // Allow using CLI flags to toggle whether differences vs hardware are
+    // erased (by copying e.g. signs from the `rustc_apfloat` result) or kept.
+    let zero_sign_mask = if cfg.cli_strict_host_nan_sign {
+        u128::MAX
+    } else {
+        !sign_bit_mask
+    };
+
+    let host_zero_sign = host_bits & zero_sign_mask;
+    let rs_apf_zero_sign = rs_apf_bits & zero_sign_mask;
+
+    if host_zero_sign == rs_apf_zero_sign {
+        return Some("ignoring NaN sign");
+    }
+
+    // There is still a NaN payload difference, check if they both
+    // are propagated inputs (verbatim or at most "quieted" if SNaN),
+    // because in some cases with multiple NaN inputs, something
+    // (hardware or even e.g. LLVM passes or instruction selection)
+    // along the way from Rust code to final results, can end up
+    // causing a different input NaN to get propagated to the result.
+    if !cfg.cli_strict_host_nan_input_choice {
+        let mut host_propagated_any = true;
+        let mut rs_apf_propagated_any = true;
+
+        for m in [a, b, c] {
+            let in_bits = m.to_bits_u128();
+            // NOTE(eddyb) this `is_nan` check is important, as
+            // `INFINITY.to_bits() | qnan_bit_mask == NAN.to_bits()`,
+            // i.e. seeting the QNaN is more than enough to turn
+            // a non-NaN (infinities, specifically) into a NaN.
+            if !is_nan(in_bits) {
+                continue;
+            }
+
+            // Make sure to "quiet" (i.e. turn SNaN into QNaN)
+            // the input first, as propagation does (in the
+            // default exception handling mode, at least).
+            let in_quiet = in_bits | qnan_bit_mask;
+            let in_zero_sign = in_quiet & zero_sign_mask;
+
+            if in_zero_sign == host_zero_sign {
+                host_propagated_any = true;
+            }
+
+            if in_zero_sign == rs_apf_zero_sign {
+                rs_apf_propagated_any = true;
+            }
+        }
+
+        // Note that this allows propagating any NaN, even if not the same.
+        if host_propagated_any && rs_apf_propagated_any {
+            return Some("both are propagated inputs");
+        }
+    }
+
+    // HACK(eddyb) last chance to hide a NaN payload difference,
+    // in this case for FMAs of the form `a * b + NaN`, when `a * b`
+    // generates a new NaN (which hardware can ignore in favor of the
+    // existing NaN, but APFloat returns the fresh default NaN instead).
+    if cfg.cli_ignore_fma_nan_generate_vs_propagate {
+        if cfg.op == Op::MulAdd
+            && !is_nan(a.to_bits_u128())
+            && !is_nan(b.to_bits_u128())
+            && is_nan(c.to_bits_u128())
+            && host_zero_sign == (c.to_bits_u128() | qnan_bit_mask) & zero_sign_mask
+            && rs_apf_bits == F::RustcApFloat::NAN.to_bits()
+        {
+            return Some("fresh NaN from FMA");
+        }
+    }
+
+    // None of the patterns matched, we're not going to ignore the mismatch
+    None
+}
+
+fn ignore_host_status<F: FloatRepr>(
+    cfg: &EvalCfg,
+    _a: F,
+    _b: F,
+    _c: F,
+    rs_apf: StatusAnd<F>,
+    host_res: StatusAnd<F>,
+) -> Option<&'static str> {
+    let is_x86 = cfg!(target_arch = "x86_64") || cfg!(target_arch = "x86");
+
+    if is_x86
+        && rs_apf.status == Status::INEXACT
+        && host_res.status == Status::INEXACT | Status::OVERFLOW
+    {
+        return Some("x86 tends to set both overflow and inexact");
+    }
+
+    if is_x86
+        && cfg.op == Op::Rem
+        && matches!(cfg.kind, FpKind::Ieee16 | FpKind::Ieee32 | FpKind::Ieee64)
+    {
+        return Some("host remainder doesn't return status");
+    }
+
+    None
+}
+
+/// Execute the requested operation as an AP float with the given rounding mode.
+fn eval_rust_ap<F: FloatRepr>(op: Op, rm: Round, a: F, b: F, c: F) -> StatusAnd<F>
+where
+    Single: FloatConvert<<F as FloatRepr>::RustcApFloat>,
+    Double: FloatConvert<<F as FloatRepr>::RustcApFloat>,
+{
+    let res = match op {
+        Op::Neg => Status::OK.and(-a.to_ap()),
+        Op::Add => a.to_ap().add_r(b.to_ap(), rm),
+        Op::Sub => a.to_ap().sub_r(b.to_ap(), rm),
+        Op::Mul => a.to_ap().mul_r(b.to_ap(), rm),
+        Op::Div => a.to_ap().div_r(b.to_ap(), rm),
+        // FIXME: rem disregards rounding mode
+        Op::Rem => a.to_ap() % b.to_ap(),
+        Op::MulAdd => a.to_ap().mul_add_r(b.to_ap(), c.to_ap(), rm),
+        // FIXME: the below operations discard a status. We should turn them into
+        // unidirectional operations.
+        Op::FToI128ToF => {
+            F::RustcApFloat::from_i128_r(a.to_ap().to_i128_r(128, rm, &mut false).value, rm)
+        }
+        Op::FToU128ToF => {
+            F::RustcApFloat::from_u128_r(a.to_ap().to_u128_r(128, rm, &mut false).value, rm)
+        }
+        Op::FToSingleToF => FloatConvert::<F::RustcApFloat>::convert_r(
+            FloatConvert::<ieee::Single>::convert_r(a.to_ap(), rm, &mut false).value,
+            rm,
+            &mut false,
+        ),
+        Op::FToDoubleToF => FloatConvert::<F::RustcApFloat>::convert_r(
+            FloatConvert::<ieee::Double>::convert_r(a.to_ap(), rm, &mut false).value,
+            rm,
+            &mut false,
+        ),
+        Op::Sqrt => a.to_ap().sqrt(rm),
+    };
+
+    res.map(F::from_ap)
+}
+
+/// Execute the requested operation on the host with the given rounding mode, if possible. If
+/// the operation is not possible for whatever reason, return `None`.
+fn eval_host<F: HostFloat>(
+    op: Op,
+    rm: Round,
+    a: F::UInt,
+    b: F::UInt,
+    c: F::UInt,
+) -> Option<StatusAnd<F::UInt>> {
+    let a = F::from_bits(a);
+    let b = F::from_bits(b);
+    let c = F::from_bits(c);
+
+    let res = match op {
+        Op::Neg => Status::OK.and(a.neg()),
+        Op::Add => a.add_r(b, rm)?,
+        Op::Sub => a.sub_r(b, rm)?,
+        Op::Mul => a.mul_r(b, rm)?,
+        Op::Div => a.div_r(b, rm)?,
+        // FIXME: rem disregards rounding mode
+        Op::Rem => a.rem(b, rm)?,
+        Op::MulAdd => a.mul_add_r(b, c, rm)?,
+        // FIXME: the below operations discard a status. We should turn them into
+        // unidirectional operations.
+        Op::FToI128ToF => F::from_i128_r(a.to_i128_r(rm)?.value, rm)?,
+        Op::FToU128ToF => F::from_u128_r(a.to_u128_r(rm)?.value, rm)?,
+        Op::FToSingleToF => F::from_single_r(a.to_single_r(rm)?.value, rm)?,
+        Op::FToDoubleToF => F::from_double_r(a.to_double_r(rm)?.value, rm)?,
+        Op::Sqrt => F::s
+    };
+
+    Some(res.map(F::to_bits))
+}
+
+struct FloatPrintHelper<F: FloatRepr>(F);
+impl<F: FloatRepr> fmt::Debug for FloatPrintHelper<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{cy}0x{hex:0hex_width$x}{rst} {gry}/* {repr} */{rst}",
+            hex = self.0.to_bits_u128(),
+            repr = self.0,
+            hex_width = F::BYTE_LEN * 2,
+            rst = term().rst,
+            cy = term().cy,
+            gry = term().gry
+        )
+    }
+}
+
+/// Decode a rounding mode.
+fn round_from_u8(tag: u8) -> Option<Round> {
+    let v = match tag {
+        x if x == round_to_u8(Round::NearestTiesToEven) => Round::NearestTiesToEven,
+        x if x == round_to_u8(Round::TowardZero) => Round::TowardZero,
+        x if x == round_to_u8(Round::TowardPositive) => Round::TowardPositive,
+        x if x == round_to_u8(Round::TowardNegative) => Round::TowardNegative,
+        x if x == round_to_u8(Round::NearestTiesToAway) => Round::NearestTiesToAway,
+        _ => return None,
+    };
+    Some(v)
+}
+
+/// Encode a rounding mode.
+fn round_to_u8(rm: Round) -> u8 {
+    match rm {
+        Round::NearestTiesToEven => 0,
+        Round::TowardZero => 1,
+        Round::TowardPositive => 2,
+        Round::TowardNegative => 3,
+        Round::NearestTiesToAway => 4,
+    }
+}
+
+/// Masks for bitwise operations.
+#[derive(Clone, Copy, Debug)]
+struct Masks {
+    sign_bit_mask: u128,
+    exp_mask: u128,
+    sig_mask: u128,
+    qnan_bit_mask: u128,
+}
+
+impl Masks {
+    fn for_float<F: FloatRepr>() -> Self {
+        // HACK(eddyb) to avoid putting this behind a `HasHardFloat` bound,
+        // we hardcode some aspects of the IEEE binary float representation,
+        // relying on `rustc_apfloat`-provided constants as a source of truth.
+        let sign_bit_mask = 1 << (F::BIT_WIDTH - 1);
+        let exp_mask = F::RustcApFloat::INFINITY.to_bits();
+        let sig_mask = (1 << exp_mask.trailing_zeros()) - 1;
+        let qnan_bit_mask = (sig_mask + 1) >> 1;
+
+        Self {
+            sign_bit_mask,
+            exp_mask,
+            sig_mask,
+            qnan_bit_mask,
+        }
+    }
+}
+
+/// Helper for printing with color.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Default)]
+struct Colors {
+    bold: &'static str,
+    dim: &'static str,
+    gry: &'static str,
+    red_b: &'static str,
+    grn: &'static str,
+    yel: &'static str,
+    yel_b: &'static str,
+    cy: &'static str,
+    rst: &'static str,
+}
+
+thread_local! {
+    static COLORS: Colors = {
+        if io::stdout().is_terminal() {
+            Colors {
+                bold: "\x1b[1m",
+                dim: "\x1b[2m",
+                gry: "\x1b[90m",
+                red_b: "\x1b[1m\x1b[91m",
+                grn: "\x1b[92m",
+                yel: "\x1b[93m",
+                yel_b: "\x1b[1m\x1b[93m",
+                cy: "\x1b[96m",
+                rst: "\x1b[m",
+            }
+        } else {
+            Colors::default()
+        }
+    }
+}
+
+fn term() -> Colors {
+    COLORS.with(|x| *x)
+}
+
+/// Interop for items that cross the FFI bounary.
+mod cxx {
+    use super::*;
+    use std::ffi::{CStr, c_char};
+
+    macro_rules! make_extern {
+        ($F:ty, $name:ident) => {
+            pub safe fn $name(
+                opcode: u8,
+                round: u8,
+                ai: <$F as FloatRepr>::Repr,
+                bi: <$F as FloatRepr>::Repr,
+                ci: <$F as FloatRepr>::Repr,
+                out: &mut <$F as FloatRepr>::Repr,
+            ) -> i32;
+        };
+    }
+
+    // SAFETY: matches definition in `ap_fuzz.cpp`
+    unsafe extern "C" {
+        fn check_error() -> *const c_char;
+
+        make_extern!(BrainF16, cxx_apf_eval_op_brainf16);
+        make_extern!(Ieee16, cxx_apf_eval_op_ieee16);
+        make_extern!(Ieee32, cxx_apf_eval_op_ieee32);
+        make_extern!(Ieee64, cxx_apf_eval_op_ieee64);
+        make_extern!(Ieee128, cxx_apf_eval_op_ieee128);
+        // Not defined here
+        // make_extern!(PPCDoubleDouble, cxx_apf_eval_op_ppcdoubledouble);
+        make_extern!(F8E5M2, cxx_apf_eval_op_f8e5m2);
+        make_extern!(F8E5M2FNUZ, cxx_apf_eval_op_f8e5m2fnuz);
+        make_extern!(F8E4M3FN, cxx_apf_eval_op_f8e4m3fn);
+        make_extern!(F8E4M3FNUZ, cxx_apf_eval_op_f8e4m3fnuz);
+        make_extern!(X87_F80, cxx_apf_eval_op_x87_f80);
+    }
+
+    /// Return the caught exception's error if present.
+    fn error() -> Option<String> {
+        unsafe {
+            let p = check_error();
+            if p.is_null() {
+                return None;
+            }
+
+            let s = CStr::from_ptr(p);
+            Some(s.to_string_lossy().into_owned())
+        }
+    }
+
+    /// Turn a status integer into our `Status`.
+    pub fn decode_status(mut status: i32) -> Status {
+        if status < 0 {
+            panic!("error from c++: {}", error().unwrap())
+        }
+
+        let mut res = Status::OK;
+
+        let invalid = 0x01;
+        let divby0 = 0x02;
+        let oflow = 0x04;
+        let uflow = 0x08;
+        let inexact = 0x10;
+
+        if status & invalid != 0 {
+            res |= Status::INVALID_OP;
+            status &= !invalid;
+        }
+        if status & divby0 != 0 {
+            res |= Status::DIV_BY_ZERO;
+            status &= !divby0;
+        }
+        if status & oflow != 0 {
+            res |= Status::OVERFLOW;
+            status &= !oflow;
+        }
+        if status & uflow != 0 {
+            res |= Status::UNDERFLOW;
+            status &= !uflow;
+        }
+        if status & inexact != 0 {
+            res |= Status::INEXACT;
+            status &= !inexact;
+        }
+        assert_eq!(status, 0, "uncleared status flags: {status:#010x}");
+        res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_masks() {
+        // Ensure our masks are correct
+        mask_assertions::<Ieee16>();
+        mask_assertions::<Ieee32>();
+        mask_assertions::<Ieee64>();
+        mask_assertions::<Ieee128>();
+        mask_assertions::<F8E5M2>();
+        mask_assertions::<F8E4M3FN>();
+        mask_assertions::<BrainF16>();
+        mask_assertions::<X87_F80>();
+    }
+
+    fn mask_assertions<F: FloatRepr>() {
+        let masks = Masks::for_float::<F>();
+        println!("{} masks: {masks:#?}", F::NAME);
+        let Masks {
+            sign_bit_mask,
+            exp_mask,
+            sig_mask,
+            qnan_bit_mask,
+        } = masks;
+
+        // Sanity Checks
+        assert_eq!(
+            sign_bit_mask | exp_mask | sig_mask,
+            !0 >> (128 - F::BIT_WIDTH)
+        );
+        assert!((sig_mask + 1).is_power_of_two());
+        assert!(((exp_mask | sig_mask) + 1).is_power_of_two());
+        assert_eq!(
+            sign_bit_mask.count_ones() + exp_mask.count_ones() + sig_mask.count_ones(),
+            F::BIT_WIDTH as u32
+        );
+        if F::KIND == FpKind::F8E4M3FN {
+            // No infinity or NaN for this version
+            assert_eq!(qnan_bit_mask, 0);
+        } else {
+            assert!(qnan_bit_mask.is_power_of_two());
+        }
+        assert_eq!(exp_mask | qnan_bit_mask, F::RustcApFloat::NAN.to_bits());
+    }
+
+    /* Check that `ALL` actually contains all variants. */
+
+    #[test]
+    fn op_all_list() {
+        let mut computed = (0u8..=u8::MAX).filter_map(Op::from_u8).collect::<Vec<_>>();
+        let mut listed = Op::ALL.to_vec();
+        computed.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(computed, listed);
+    }
+
+    #[test]
+    fn fpkind_all_list() {
+        let mut computed = (0u8..=u8::MAX)
+            .filter_map(FpKind::from_u8)
+            .collect::<Vec<_>>();
+        let mut listed = FpKind::ALL.to_vec();
+        computed.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(computed, listed);
+    }
 }

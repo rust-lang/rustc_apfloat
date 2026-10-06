@@ -20,6 +20,7 @@ fn ppc_double_double() {
     assert_eq!(0x8000000000000000, test.to_bits());
 
     let test = "1.0".parse::<DoubleDouble>().unwrap();
+    assert_eq!(test, DoubleDouble::ONE);
     assert_eq!(0x3ff0000000000000, test.to_bits());
 
     // LDBL_MAX

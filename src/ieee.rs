@@ -82,20 +82,51 @@ enum Loss {
 }
 
 /// How the nonfinite values Inf and NaN are represented.
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NonfiniteBehavior {
     /// Represents standard IEEE 754 behavior. A value is nonfinite if the
     /// exponent field is all 1s. In such cases, a value is Inf if the
     /// significand bits are all zero, and NaN otherwise
     IEEE754,
 
-    /// Only the Float8E5M2 has this behavior. There is no Inf representation. A
-    /// value is NaN if the exponent field and the mantissa field are all 1s.
+    /// This behavior is present in the Float8ExMyFN* types (Float8E4M3FN,
+    /// Float8E5M2FNUZ, Float8E4M3FNUZ, and Float8E4M3B11FNUZ). There is no
+    /// representation for Inf, and operations that would ordinarily produce Inf
+    /// produce NaN instead.
+    ///
+    /// The details of the NaN representation(s) in this form are determined by the
+    /// `NanEncoding` enum. We treat all NaNs as quiet, as the available
+    /// encodings do not distinguish between signalling and quiet NaN.
+    NanOnly,
+}
+
+/// How NaN values are represented.
+///
+/// This is curently only used in combination with `NonfiniteBehavior::NanOnly`,
+/// and using a variant other than IEEE while having IEEE non-finite behavior is
+/// liable to lead to unexpected results.
+#[non_exhaustive]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum NanEncoding {
+    /// Represents the standard IEEE behavior where a value is NaN if its
+    /// exponent is all 1s and the significand is non-zero.
+    IEEE,
+
+    /// Represents the behavior in the Float8E4M3 floating point type where NaN is
+    /// represented by having the exponent and mantissa set to all 1s.
     /// This behavior matches the FP8 E4M3 type described in
     /// <https://arxiv.org/abs/2209.05433>. We treat both signed and unsigned NaNs
     /// as non-signalling, although the paper does not state whether the NaN
     /// values are signalling or not.
-    NanOnly,
+    AllOnes,
+
+    /// Represents the behavior in Float8E{5,4}E{2,3}FNUZ floating point types
+    /// where NaN is represented by a sign bit of 1 and all 0s in the exponent
+    /// and mantissa (i.e. the negative zero encoding in a IEEE float). Since
+    /// there is only one NaN value, it is treated as quiet NaN. This matches the
+    /// behavior described in <https://arxiv.org/abs/2206.02915>.
+    NegativeZero,
 }
 
 // HACK(eddyb) extension method flipping/changing the sign based on `bool`s.
@@ -131,6 +162,19 @@ pub trait Semantics: Sized {
     /// How the nonfinite values Inf and NaN are represented.
     const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::IEEE754;
 
+    /// How NaN values are represented.
+    const NAN_ENCODING: NanEncoding = {
+        match Self::NONFINITE_BEHAVIOR {
+            NonfiniteBehavior::IEEE754 => NanEncoding::IEEE,
+            NonfiniteBehavior::NanOnly => {
+                panic!(
+                    "non-IEEE `NONFINITE_BEHAVIOR` without also overriding \
+                    `NAN_ENCODING` to non-IEEE"
+                )
+            }
+        }
+    };
+
     /// The largest E such that 2^E is representable; this matches the
     /// definition of IEEE 754.
     const MAX_EXP: ExpInt = {
@@ -152,16 +196,16 @@ pub trait Semantics: Sized {
     /// The base significand bitpattern of NaNs, i.e. the bits that must always
     /// be set in all NaNs, with other significand bits being either used for
     /// payload bits (if `NAN_PAYLOAD_MASK` covers them) or always unset.
-    const NAN_SIGNIFICAND_BASE: Limb = match Self::NONFINITE_BEHAVIOR {
-        NonfiniteBehavior::IEEE754 => 0,
-        NonfiniteBehavior::NanOnly => (1 << (Self::PRECISION - 1)) - 1,
+    const NAN_SIGNIFICAND_BASE: Limb = match Self::NAN_ENCODING {
+        NanEncoding::IEEE | NanEncoding::NegativeZero => 0,
+        NanEncoding::AllOnes => (1 << (Self::PRECISION - 1)) - 1,
     };
 
     /// The significand bitmask for the payload of a NaN (if supported),
     /// including the "quiet bit" (telling QNaNs apart from SNaNs).
-    const NAN_PAYLOAD_MASK: Limb = match Self::NONFINITE_BEHAVIOR {
-        NonfiniteBehavior::IEEE754 => (1 << (Self::PRECISION - 1)) - 1,
-        NonfiniteBehavior::NanOnly => 0,
+    const NAN_PAYLOAD_MASK: Limb = match Self::NAN_ENCODING {
+        NanEncoding::IEEE => (1 << (Self::PRECISION - 1)) - 1,
+        NanEncoding::AllOnes | NanEncoding::NegativeZero => 0,
     };
 
     /// The significand bitpattern to mark a NaN as quiet (if supported).
@@ -328,18 +372,177 @@ ieee_semantics! {
     /// 8-bit floating point number with S1E5M2 bit layout.
     ///
     /// Follows IEEE-754 conventions with S1E5M2 bit layout as described in
-    /// <https://arxiv.org/abs/2209.05433>.
+    /// <https://arxiv.org/abs/2209.05433>. Has NaNs and infinities like standard float types.
+    ///
+    /// See also: <https://onnx.ai/onnx/technical/float8.html#e4m3fn-and-e5m2>.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E5M2};
+    ///
+    /// /* All special bitpatterns are similar to IEEE */
+    ///
+    /// assert_eq!(Float8E5M2::largest().to_bits(), 0b0_11110_11);
+    /// assert_eq!(Float8E5M2::SMALLEST.to_bits(), 0b0_00000_01);
+    ///
+    /// assert_eq!(Float8E5M2::INFINITY.to_bits(), 0b0_11111_00);
+    /// assert_eq!((-Float8E5M2::INFINITY).to_bits(), 0b1_11111_00);
+    ///
+    /// assert_eq!(Float8E5M2::ONE.to_bits(), 0b0_01111_00);
+    /// assert_eq!((-Float8E5M2::ONE).to_bits(), 0b1_01111_00);
+    ///
+    /// assert!(Float8E5M2::from_bits(0b0_11111_01).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b0_11111_10).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b0_11111_11).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b1_11111_01).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b1_11111_10).is_nan());
+    /// assert!(Float8E5M2::from_bits(0b1_11111_11).is_nan());
+    ///
+    /// assert!(Float8E5M2::from_bits(0b0_00000_00).is_zero());
+    /// assert!(Float8E5M2::from_bits(0b1_00000_00).is_zero());
+    /// ```
     Float8E5M2 = Float8E5M2S(8:5),
+
+    /// 8-bit floating point number with S1E5M2 bit layout and no infinity
+    /// or signed zero.
+    ///
+    /// Mostly follows IEEE-754 conventions and bit layout S1E5M2 described in
+    /// <https://arxiv.org/abs/2206.02915>, with expanded range and with no infinity or signed
+    /// zero (FN -> Finite, UZ -> unsigned zero). The typical negative zero bitpattern
+    /// (`1.00000.00`) instead represents the NaN.
+    ///
+    /// This format's exponent bias is 16, instead of the 15 (2 ** (5 - 1) - 1) that IEEE
+    /// precedent would imply.
+    ///
+    /// See also: <https://onnx.ai/onnx/technical/float8.html#e4m3fnuz-and-e5m2fnuz>.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E5M2FNUZ};
+    ///
+    /// // Typical infinite and NaN bitpatterns are used to represent finite values
+    /// assert_eq!(Float8E5M2FNUZ::largest().to_bits(), 0b0_11111_11);
+    /// assert_eq!(Float8E5M2FNUZ::SMALLEST.to_bits(), 0b0_00000_01);
+    ///
+    /// assert_eq!(Float8E5M2FNUZ::ONE.to_bits(), 0b0_10000_00);
+    /// assert_eq!((-Float8E5M2FNUZ::ONE).to_bits(), 0b1_10000_00);
+    ///
+    /// assert!(Float8E5M2FNUZ::from_bits(0b0_11111_00).is_finite());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b0_11111_11).is_finite());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b1_11111_00).is_finite());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b1_11111_11).is_finite());
+    ///
+    /// // There is no negative zero, this bitpattern represents NaN instead
+    /// assert!(Float8E5M2FNUZ::from_bits(0b0_00000_00).is_zero());
+    /// assert!(Float8E5M2FNUZ::from_bits(0b1_00000_00).is_nan());
+    /// ```
+    Float8E5M2FNUZ = Float8E5M2FNUZS(8:5) {
+        const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
+        const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 1;
+    },
 
     /// 8-bit floating point number with S1E4M3 bit layout.
     ///
-    /// This type mostly follows IEEE-754 conventions with a
-    /// bit layout S1E4M3 as described in <https://arxiv.org/abs/2209.05433>.
-    /// Unlike IEEE-754 types, there are no infinity values, and NaN is
-    /// represented with the exponent and mantissa bits set to all 1s.
+    /// This type mostly follows IEEE-754 conventions with a bit layout S1E4M3 as described in
+    /// <https://arxiv.org/abs/2209.05433>. Unlike IEEE-754 types, there are no infinity values,
+    /// and NaN is represented with the exponent and mantissa bits set to all 1s.
+    ///
+    /// Operations that would overflow to infinity are clamped instead.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E4M3FN};
+    ///
+    /// let largest = Float8E4M3FN::largest();
+    /// let one = Float8E4M3FN::ONE;
+    ///
+    ///
+    /// assert_eq!(largest.to_bits(), 0b0_1111_110);
+    /// assert_eq!(Float8E4M3FN::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert_eq!(Float8E4M3FN::ONE.to_bits(), 0b0_0111_000);
+    /// assert_eq!((-Float8E4M3FN::ONE).to_bits(), 0b1_0111_000);
+    ///
+    /// assert_eq!((largest + one).value.to_bits(), largest.to_bits());
+    ///
+    /// assert!(Float8E4M3FN::from_bits(0b0_0000_000).is_zero());
+    /// assert!(Float8E4M3FN::from_bits(0b1_0000_000).is_zero());
+    /// ```
     Float8E4M3FN = Float8E4M3FNS(8:4) {
         const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::AllOnes;
     },
+
+    /// 8-bit floating point number with S1E4M3 bit layout and no infinity
+    /// or signed zero.
+    ///
+    /// Mostly follows IEEE-754 conventions and bit layout S1E5M2 described in
+    /// <https://arxiv.org/abs/2206.02915>, with expanded range and with no infinity or signed
+    /// zero. NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero). This
+    /// format's exponent bias is 8, instead of the 7 (2 ** (4 - 1) - 1) that IEEE precedent
+    /// would imply.
+    ///
+    /// See also: <https://onnx.ai/onnx/technical/float8.html#e4m3fnuz-and-e5m2fnuz>.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E4M3FNUZ};
+    ///
+    /// // Typical infinite and NaN bitpatterns are used to represent finite values
+    /// assert_eq!(Float8E4M3FNUZ::largest().to_bits(), 0b0_1111_111);
+    /// assert_eq!(Float8E4M3FNUZ::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert_eq!(Float8E4M3FNUZ::ONE.to_bits(), 0b0_1000_000);
+    /// assert_eq!((-Float8E4M3FNUZ::ONE).to_bits(), 0b1_1000_000);
+    ///
+    /// assert!(Float8E4M3FNUZ::from_bits(0b0_1111_100).is_finite());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b0_1111_111).is_finite());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b1_1111_100).is_finite());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b1_1111_111).is_finite());
+    ///
+    /// // There is no negative zero, this bitpattern represents NaN instead
+    /// assert!(Float8E4M3FNUZ::from_bits(0b0_0000_000).is_zero());
+    /// assert!(Float8E4M3FNUZ::from_bits(0b1_0000_000).is_nan());
+    /// ```
+    Float8E4M3FNUZ = Float8E4M3FNUZS(8:4) {
+        const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
+        const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 1;
+    },
+
+    /// 8-bit floating point number mostly following IEEE-754 conventions and bit layout S1E4M3
+    /// with expanded range and with no infinity or signed zero.
+    ///
+    /// NaN is represented as negative zero. (FN -> Finite, UZ -> unsigned zero).
+    /// This format's exponent bias is 11, instead of the 7 (2 ** (4 - 1) - 1)
+    /// that IEEE precedent would imply.
+    ///
+    /// ```rust
+    /// use rustc_apfloat::{Float, ieee::Float8E4M3B11FNUZ};
+    ///
+    /// // Typical infinite and NaN bitpatterns are used to represent finite values
+    /// assert_eq!(Float8E4M3B11FNUZ::largest().to_bits(), 0b0_1111_111);
+    /// assert_eq!(Float8E4M3B11FNUZ::SMALLEST.to_bits(), 0b0_0000_001);
+    ///
+    /// assert_eq!(Float8E4M3B11FNUZ::ONE.to_bits(), 0b0_1011_000);
+    /// assert_eq!((-Float8E4M3B11FNUZ::ONE).to_bits(), 0b1_1011_000);
+    ///
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_1111_100).is_finite());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_1111_111).is_finite());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b1_1111_100).is_finite());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b1_1111_111).is_finite());
+    ///
+    /// // There is no negative zero, this bitpattern represents NaN instead
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b0_0000_000).is_zero());
+    /// assert!(Float8E4M3B11FNUZ::from_bits(0b1_0000_000).is_nan());
+    /// ```
+    Float8E4M3B11FNUZ = Float8E4M3B11FNUZS(8:4) {
+        const NONFINITE_BEHAVIOR: NonfiniteBehavior = NonfiniteBehavior::NanOnly;
+        const NAN_ENCODING: NanEncoding = NanEncoding::NegativeZero;
+        const MIN_EXP: ExpInt = Self::IEEE_MIN_EXP - 4;
+    },
+
+    /// Floating point number that occupies 32 bits or less of storage, providing
+    /// improved range compared to half (16-bit) formats, at (potentially)
+    /// greater throughput than single precision (32-bit) formats.
+    FloatTF32 = FloatTF32S(19:8),
 }
 
 // FIXME(eddyb) consider moving X87-specific logic to a "has explicit integer bit"
@@ -491,8 +694,30 @@ impl<S: Semantics> PartialOrd for IeeeFloat<S> {
 impl<S: Semantics> Neg for IeeeFloat<S> {
     type Output = Self;
     fn neg(mut self) -> Self {
-        self.read_only_sign_do_not_mutate = !self.is_negative();
+        // With NaN-as-negative-zero, neither NaN nor positive zero can change
+        // their signs.
+        if S::NAN_ENCODING != NanEncoding::NegativeZero || (!self.is_nan() && !self.is_zero()) {
+            self.read_only_sign_do_not_mutate = !self.is_negative();
+        }
         self
+    }
+}
+
+impl<Src: Semantics> IeeeFloat<Src> {
+    /// Returns true if any number described by `Self` can be precisely represented
+    /// by a normal (not subnormal) value in `IeeeFloat<Dst>`.
+    pub const fn is_representable_as_normal_in<Dst: Semantics>() -> bool {
+        // Exponent range must be larger.
+        if Src::MAX_EXP >= Dst::MAX_EXP || Src::MIN_EXP <= Dst::MIN_EXP {
+            return false;
+        }
+
+        // If the mantissa is long enough, the result value could still be denormal
+        // with a larger exponent range.
+        //
+        // FIXME: This condition is probably not accurate but also shouldn't be a
+        // practical concern with existing types.
+        return Dst::PRECISION >= Src::PRECISION;
     }
 }
 
@@ -830,10 +1055,11 @@ impl IeeeDefaultExceptionHandling {
         assert!(r.is_nan());
 
         let status = if r.is_signaling() {
-            // [IEEE Std 754-2008 6.2]:
-            // Under default exception handling, any operation signaling an invalid
-            // operation exception and for which a floating-point result is to be
-            // delivered shall deliver a quiet NaN.
+            // [IEEE Std 754-2019 6.2]:
+            // > Under default exception handling, any operation signaling an invalid
+            // > operation exception and for which a floating-point result is to be
+            // > delivered, except as stated otherwise, shall deliver a quiet NaN. For
+            // > non- default treatment, see 8.
             let [sig] = &mut r.sig;
             *sig |= if S::QNAN_SIGNIFICAND == X87DoubleExtendedS::QNAN_SIGNIFICAND {
                 // HACK(eddyb) remain bug-compatible with the original C++ code
@@ -844,22 +1070,27 @@ impl IeeeDefaultExceptionHandling {
                 S::QNAN_SIGNIFICAND
             };
 
-            // [IEEE Std 754-2008 6.2]:
-            // Signaling NaNs shall be reserved operands that, under default exception
-            // handling, signal the invalid operation exception(see 7.2) for every
-            // general-computational and signaling-computational operation except for
-            // the conversions described in 5.12.
+            // [IEEE Std 754-2019 6.2]:
+            // > Signaling NaNs shall be reserved operands that signal the invalid
+            // > operation exception (see 7.2) for every general-computational and
+            // > signaling-computational operation except for the conversions described
+            // > in 5.12.
             Status::INVALID_OP
         } else {
-            // [IEEE Std 754-2008 6.2]:
-            // For an operation with quiet NaN inputs, other than maximum and minimum
-            // operations, if a floating-point result is to be delivered the result
-            // shall be a quiet NaN which should be one of the input NaNs.
-            // ...
-            // Every general-computational and quiet-computational operation involving
-            // one or more input NaNs, none of them signaling, shall signal no
-            // exception, except fusedMultiplyAdd might signal the invalid operation
-            // exception(see 7.2).
+            // [IEEE Std 754-2019 6.2]:
+            //
+            // > Every general-computational and quiet-computational operation involving
+            // > one or more input NaNs, none of them signaling, shall signal no
+            // > exception, except fusedMultiplyAdd might signal the invalid operation
+            // > exception (see 7.2).
+            // >
+            // > For an operation with quiet NaN inputs, except as stated otherwise, if
+            // > a floating-point result is to be delivered the result shall be a
+            // > canonical quiet NaN.
+            //
+            // Note that "canonical quiet NaN" in this case is only relevant for
+            // decimal floating point. It does not mean we must return a single
+            // canonical NaN value, as some platfomrs (RISC-V) do for their operations.
             Status::OK
         };
         status.and(r)
@@ -891,16 +1122,21 @@ impl<S: Semantics> IeeeFloat<S> {
                 None => 0,
             }];
 
-        let exp = match S::NONFINITE_BEHAVIOR {
-            NonfiniteBehavior::IEEE754 => S::MAX_EXP + 1,
-            NonfiniteBehavior::NanOnly => S::MAX_EXP,
+        let (exp, sign) = match S::NAN_ENCODING {
+            NanEncoding::IEEE => (S::MAX_EXP + 1, false),
+            NanEncoding::AllOnes => (S::MAX_EXP, false),
+            NanEncoding::NegativeZero => {
+                // FIXME(const): Should check all limbs but this is easier in const.
+                assert!(sig[0] == Self::ZERO.sig[0]);
+                (Self::ZERO.exp, true)
+            }
         };
 
         IeeeFloat {
             sig,
             exp,
             read_only_category_do_not_mutate: Category::NaN,
-            read_only_sign_do_not_mutate: false,
+            read_only_sign_do_not_mutate: sign,
             marker: PhantomData,
         }
     }
@@ -916,6 +1152,14 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         sig: [0],
         exp: S::MIN_EXP - 1,
         read_only_category_do_not_mutate: Category::Zero,
+        read_only_sign_do_not_mutate: false,
+        marker: PhantomData,
+    };
+
+    const ONE: Self = IeeeFloat {
+        sig: [1 << (S::PRECISION - 1)],
+        exp: 0,
+        read_only_category_do_not_mutate: Category::Normal,
         read_only_sign_do_not_mutate: false,
         marker: PhantomData,
     };
@@ -965,15 +1209,18 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         //   significand = 1..1
         IeeeFloat {
             sig: [((1 << S::PRECISION) - 1)
-                & match S::NONFINITE_BEHAVIOR {
+                & match S::NAN_ENCODING {
                     // The largest number by magnitude in our format will be the floating point
                     // number with maximum exponent and with significand that is all ones.
-                    NonfiniteBehavior::IEEE754 => !0,
+                    NanEncoding::IEEE | NanEncoding::NegativeZero => !0,
 
                     // The largest number by magnitude in our format will be the floating point
                     // number with maximum exponent and with significand that is all ones except
                     // the LSB.
-                    NonfiniteBehavior::NanOnly => !1,
+                    NanEncoding::AllOnes => {
+                        assert_eq!(S::NONFINITE_BEHAVIOR, NonfiniteBehavior::NanOnly);
+                        !1
+                    }
                 }],
             exp: S::MAX_EXP,
             read_only_category_do_not_mutate: Category::Normal,
@@ -1129,9 +1376,10 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             }
 
             // FS can only be Status::OK or Status::INVALID_OP. There is no more work
-            // to do in the latter case. The IEEE-754R standard says it is
+            // to do in the latter case. The IEEE-754 2019 standard says it is
             // implementation-defined in this case whether, if ADDEND is a
-            // quiet NaN, we raise invalid op; this implementation does so.
+            // quiet NaN, we raise invalid op; this implementation does so. (See 754
+            // section 7.2.)
             //
             // If we need to do the addition we can do so with normal
             // precision.
@@ -1410,7 +1658,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         match self.category() {
             Category::NaN => IeeeDefaultExceptionHandling::result_from_nan(self),
 
-            // [IEEE Std 754-2008 6.1]:
+            // [IEEE Std 754-2019 6.1]:
             // The behavior of infinity in floating-point arithmetic is derived from the
             // limiting cases of real arithmetic with operands of arbitrarily
             // large magnitude, when such a limit exists.
@@ -1419,7 +1667,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             // exceptions ...
             Category::Infinity => Status::OK.and(self),
 
-            // [IEEE Std 754-2008 6.3]:
+            // [IEEE Std 754-2019 6.3]:
             // ... the sign of the result of conversions, the quantize operation, the
             // roundToIntegral operations, and the roundToIntegralExact(see 5.3.1) is
             // the sign of the first or only operand.
@@ -1472,8 +1720,8 @@ impl<S: Semantics> Float for IeeeFloat<S> {
                 }
             }
             Category::NaN => {
-                // IEEE-754R 2008 6.2 Par 2: nextUp(sNaN) = qNaN. Set Invalid flag.
-                // IEEE-754R 2008 6.2: nextUp(qNaN) = qNaN. Must be identity so we do not
+                // IEEE-754 2019 6.2 Par 2: nextUp(sNaN) = qNaN. Set Invalid flag.
+                // IEEE-754 2019 6.2: nextUp(qNaN) = qNaN. Must be identity so we do not
                 //                     change the payload.
                 if self.is_signaling() {
                     // For consistency, propagate the sign of the sNaN to the qNaN.
@@ -1780,7 +2028,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         self.sig == rhs.sig
     }
 
-    fn is_negative(self) -> bool {
+    fn is_sign_negative(self) -> bool {
         self.read_only_sign_do_not_mutate
     }
 
@@ -1789,13 +2037,22 @@ impl<S: Semantics> Float for IeeeFloat<S> {
     }
 
     fn is_signaling(self) -> bool {
-        // IEEE-754R 2008 6.2.1: A signaling NaN bit string should be encoded with the
-        // first bit of the trailing significand being 0.
+        // IEEE-754 2019 6.2.1:  signaling NaN bit string should be encoded with the
+        // first bit of the trailing significand field being 0.
         self.is_nan() && self.sig[0] & S::QNAN_SIGNIFICAND != S::QNAN_SIGNIFICAND
     }
 
     fn category(self) -> Category {
         self.read_only_category_do_not_mutate
+    }
+
+    fn make_quiet(mut self) -> Self {
+        if self.is_nan() {
+            self.sig[0] |= S::QNAN_SIGNIFICAND;
+            self
+        } else {
+            self
+        }
     }
 
     fn get_exact_inverse(self) -> Option<Self> {
@@ -1811,7 +2068,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         }
 
         // Get the inverse.
-        let mut reciprocal = Self::from_u128(1).value;
+        let mut reciprocal = Self::ONE;
         let status;
         reciprocal = unpack!(status=, reciprocal / self);
         if status != Status::OK {
@@ -1828,6 +2085,40 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         assert_eq!(reciprocal.sig, [1 << (S::PRECISION - 1)]);
 
         Some(reciprocal)
+    }
+
+    fn get_exact_log2_abs(self) -> Option<ExpInt> {
+        if !self.is_finite() || self.is_zero() {
+            return None;
+        }
+
+        let mut pop_count = 0;
+        for part in self.sig {
+            pop_count += part.count_ones();
+            if pop_count > 1 {
+                // >1 bit set
+                return None;
+            }
+        }
+
+        if self.exp != S::MIN_EXP {
+            return Some(self.exp);
+        }
+
+        let mut countr_parts = 0;
+        for part in self.sig {
+            if part != 0 {
+                let r = self.exp - ExpInt::try_from(S::PRECISION).unwrap()
+                    + countr_parts
+                    + ExpInt::try_from(part.trailing_zeros()).unwrap()
+                    + 1;
+                return Some(r);
+            }
+
+            countr_parts += ExpInt::try_from(LIMB_BITS).unwrap();
+        }
+
+        unreachable!("didn't find the set bit")
     }
 
     fn ilogb(mut self) -> ExpInt {
@@ -1861,7 +2152,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
         let max_change = S::MAX_EXP as i32 - (S::MIN_EXP as i32 - sig_bits) + 1;
 
         // Clamp to one past the range ends to let normalize handle overflow.
-        let exp_change = cmp::min(cmp::max(exp as i32, -max_change - 1), max_change);
+        let exp_change = (exp as i32).clamp(-max_change - 1, max_change);
         self.exp = self.exp.saturating_add(exp_change as ExpInt);
         self = self.normalize(round, Loss::ExactlyZero).value;
         if self.is_nan() {
@@ -1986,8 +2277,8 @@ impl<S: Semantics, T: Semantics> FloatConvert<IeeeFloat<T>> for IeeeFloat<S> {
             Category::Zero => IeeeFloat::<T>::ZERO.with_sign(self.is_negative()),
         };
 
-        // NOTE(eddyb) this catches all cases of e.g. ±Inf turning into NaN,
-        // because of `T::NONFINITE_BEHAVIOR` not being `IEEE754`.
+        // NOTE(eddyb) this catches all cases of e.g. ±Inf turning into NaN, or
+        // `-0` losing its sign, because of `T::NAN_ENCODING` not being `IEEE`.
         if matches!(self.category(), Category::Infinity | Category::Zero)
             && (r.category() != self.category() || r.is_negative() != self.is_negative())
         {
@@ -2095,13 +2386,16 @@ impl<S: Semantics> IeeeFloat<S> {
             }
         }
 
-        // NOTE(eddyb) for `NonfiniteBehavior::NanOnly`, the unique `NAN` takes up
+        // The all-ones values is an overflow if NaN is all ones. If NaN is
+        // represented by negative zero, then it is a valid finite value.
+        // NOTE(eddyb) for `NanEncoding::AllOnes`, the unique `NAN` takes up
         // the largest significand of `MAX_EXP` (which also has normals), though
         // comparing significands needs to ignore the integer bit `NAN` lacks.
-        if S::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly
+        if S::NAN_ENCODING == NanEncoding::AllOnes
             && self.exp == Self::NAN.exp
             && [self.sig[0] & S::NAN_SIGNIFICAND_BASE] == Self::NAN.sig
         {
+            assert_eq!(S::NONFINITE_BEHAVIOR, NonfiniteBehavior::NanOnly);
             return Self::overflow_result(round).map(|r| r.copy_sign(self));
         }
 
@@ -2143,13 +2437,16 @@ impl<S: Semantics> IeeeFloat<S> {
                 return Status::INEXACT.and(self);
             }
 
-            // NOTE(eddyb) for `NonfiniteBehavior::NanOnly`, the unique `NAN` takes up
+            // The all-ones values is an overflow if NaN is all ones. If NaN is
+            // represented by negative zero, then it is a valid finite value.
+            // NOTE(eddyb) for `NanEncoding::AllOnes`, the unique `NAN` takes up
             // the largest significand of `MAX_EXP` (which also has normals), though
             // comparing significands needs to ignore the integer bit `NAN` lacks.
-            if S::NONFINITE_BEHAVIOR == NonfiniteBehavior::NanOnly
+            if S::NAN_ENCODING == NanEncoding::AllOnes
                 && self.exp == Self::NAN.exp
                 && [self.sig[0] & S::NAN_SIGNIFICAND_BASE] == Self::NAN.sig
             {
+                assert_eq!(S::NONFINITE_BEHAVIOR, NonfiniteBehavior::NanOnly);
                 return Self::overflow_result(round).map(|r| r.copy_sign(self));
             }
         }

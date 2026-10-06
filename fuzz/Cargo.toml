@@ -1,11 +1,24 @@
 [package]
 name = "rustc_apfloat-fuzz"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 publish = false
 
 [dependencies]
 afl = "0.15.10"
 clap = { version = "4.1.13", features = ["derive"] }
+num-derive = "0.4.2"
 num-traits = "0.2.15"
 rustc_apfloat = { path = ".." }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    # Set by the fuzzer
+    'cfg(fuzzing)',
+    # Unstable configs
+    'cfg(target_has_reliable_f16)',
+    'cfg(target_has_reliable_f128)',
+] }
+
+[lints.cargo]
+non_kebab_case_bins = "allow"

@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/462a31f5a5abb905869ea93cc49b096079b11aa4>
+//! <https://github.com/llvm/llvm-project/commit/a284bdb31146160352da905a888da738f2661b50>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -30,7 +30,6 @@
 //! This API is completely unstable and subject to change.
 
 #![no_std]
-#![deny(warnings)]
 #![forbid(unsafe_code)]
 
 #[macro_use]
@@ -45,7 +44,7 @@ use core::ops::{AddAssign, DivAssign, MulAssign, RemAssign, SubAssign};
 use core::str::FromStr;
 
 bitflags! {
-    /// IEEE-754R 7: Default exception handling.
+    /// IEEE-754 7: Default exception handling.
     ///
     /// UNDERFLOW or OVERFLOW are always returned or-ed with INEXACT.
     ///
@@ -92,6 +91,8 @@ impl<T> StatusAnd<T> {
 
 impl<T: core::fmt::Debug> StatusAnd<T> {
     /// Extract the inner value if there were no errors. If there were errors, panic.
+    #[inline]
+    #[track_caller]
     pub fn unwrap(self) -> T {
         assert_eq!(self.status, Status::OK, "called `StatusAnd::unwrap()` on an error value. Value: {:?}", self.value);
         self.value
@@ -127,7 +128,7 @@ pub enum Category {
     Zero,
 }
 
-/// IEEE-754R 4.3: Rounding-direction attributes.
+/// IEEE-754 4.3: Rounding-direction attributes.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Round {
     NearestTiesToEven,
@@ -153,9 +154,9 @@ impl Neg for Round {
 pub type ExpInt = i32;
 
 // \c ilogb error results.
-pub const IEK_INF: ExpInt = ExpInt::max_value();
-pub const IEK_NAN: ExpInt = ExpInt::min_value();
-pub const IEK_ZERO: ExpInt = ExpInt::min_value() + 1;
+pub const IEK_INF: ExpInt = ExpInt::MAX;
+pub const IEK_NAN: ExpInt = ExpInt::MIN;
+pub const IEK_ZERO: ExpInt = ExpInt::MIN + 1;
 
 /// An error which can occur when parsing a floating point number from a string.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -174,7 +175,7 @@ pub struct ParseError(pub &'static str);
 /// implementation for a run-time library during development of a faster
 /// target-specific one.
 ///
-/// All 5 rounding modes in the IEEE-754R draft are handled correctly for all
+/// All 5 rounding modes in IEEE-754 2019 are handled correctly for all
 /// implemented operations. Currently implemented operations are add, subtract,
 /// multiply, divide, fused-multiply-add, conversion-to-float,
 /// conversion-to-integer and conversion-from-integer. New rounding modes
@@ -218,7 +219,7 @@ pub struct ParseError(pub &'static str);
 /// in non-conversion operations. The exponent is implicitly all 1 bits.
 ///
 /// `apfloat` does not provide any exception handling beyond default exception
-/// handling. We represent Signaling NaNs via IEEE-754R 2008 6.2.1 should clause
+/// handling. We represent Signaling NaNs via IEEE-754 2019 6.2.1 should clause
 /// by encoding Signaling NaNs with the first bit of its trailing significand as
 /// 0.
 ///
@@ -239,6 +240,7 @@ pub trait Float:
     + Default
     + FromStr<Err = ParseError>
     + PartialOrd
+    + fmt::Debug
     + fmt::Display
     + Neg<Output = Self>
     + AddAssign
@@ -269,12 +271,25 @@ pub trait Float:
     /// Positive Zero.
     const ZERO: Self;
 
+    /// One.
+    const ONE: Self;
+
     /// Positive Infinity.
     const INFINITY: Self;
 
     /// NaN (Not a Number).
     // FIXME(eddyb) provide a default when qnan becomes const fn.
     const NAN: Self;
+
+    /// Number of bits needed to represent the largest integer that
+    /// the floating point type can hold.
+    // FIXME should be const fn.
+    fn max_int_bits(signed: bool) -> usize {
+        // The max FP value is pow(2, MaxExponent) * (1 + MaxFraction), so we need
+        // at least one more bit than the MaxExponent to hold the max FP value.
+        // Another extra sign bit is needed for signed integers.
+        Self::MAX_EXP as usize + 1 + (signed as usize)
+    }
 
     /// Factory for QNaN values.
     // FIXME(eddyb) should be const fn.
@@ -312,12 +327,13 @@ pub trait Float:
     fn ieee_rem(self, rhs: Self) -> StatusAnd<Self>;
     /// C fmod, or llvm frem.
     fn c_fmod(self, rhs: Self) -> StatusAnd<Self>;
+    /// IEEE-754 _roundToIntegral*_.
     fn round_to_integral(self, round: Round) -> StatusAnd<Self>;
 
-    /// IEEE-754R 2008 5.3.1: nextUp.
+    /// IEEE-753 _nextUp_.
     fn next_up(self) -> StatusAnd<Self>;
 
-    /// IEEE-754R 2008 5.3.1: nextDown.
+    /// IEEE-754 _nextDown_.
     ///
     /// *NOTE* since nextDown(x) = -nextUp(-x), we only implement nextUp with
     /// appropriate sign switching before/after the computation.
@@ -410,17 +426,22 @@ pub trait Float:
     /// Bitwise comparison for equality (QNaNs compare equal, 0!=-0).
     fn bitwise_eq(self, rhs: Self) -> bool;
 
-    // IEEE-754R 5.7.2 General operations.
+    // IEEE-754 5.7.2 General operations.
 
-    /// Implements IEEE 754-2008 `minNum` with the SNaN handling of IEEE 754-2019 `minimumNumber`.
-    /// Returns the smaller of the 2 arguments if both are not NaN. If either argument is a NaN,
-    /// returns the other argument. If both arguments are equal (in particular, if one is `-0.0` and
-    /// `+0.0`), no guarantee is made about which one is returned.
+    /// Implements IEEE-754 2019 _minimumNumber_ semantics. Returns the smaller of the two arguments
+    /// if both are not NaN. If either argument is a NaN, returns the other argument. `-0.0` is
+    /// treated as ordered less than `+0.0`.
     fn min(self, other: Self) -> Self {
         if self.is_nan() {
             other
         } else if other.is_nan() {
             self
+        } else if self.is_zero() && other.is_zero() && (self.is_sign_negative() != other.is_sign_negative()) {
+            if self.is_sign_negative() {
+                self
+            } else {
+                other
+            }
         } else if other < self {
             other
         } else {
@@ -428,15 +449,20 @@ pub trait Float:
         }
     }
 
-    /// Implements IEEE 754-2008 `maxNum` with the SNaN handling of IEEE 754-2019 `maximumNumber`.
-    /// Returns the larger of the 2 arguments if both are not NaN. If either argument is a NaN,
-    /// returns the other argument. If both arguments are equal (in particular, if one is `-0.0` and
-    /// `+0.0`), no guarantee is made about which one is returned.
+    /// Implements IEEE-754 2019 _maximumNumber_ semantics. Returns the larger of the two arguments
+    /// if both are not NaN. If either argument is a NaN, returns the other argument. `+0.0` is
+    /// treated as ordered greater than `-0.0`.
     fn max(self, other: Self) -> Self {
         if self.is_nan() {
             other
         } else if other.is_nan() {
             self
+        } else if self.is_zero() && other.is_zero() && (self.is_sign_negative() != other.is_sign_negative()) {
+            if self.is_sign_negative() {
+                other
+            } else {
+                self
+            }
         } else if self < other {
             other
         } else {
@@ -484,23 +510,34 @@ pub trait Float:
         }
     }
 
-    /// IEEE-754R sqrt: Returns the correctly rounded square root of the current value
+    /// IEEE-754R _sqrt_: Returns the correctly rounded square root of the current value
     /// Note: we currently don't support raising any exceptions from sqrt, so the result is always exact and the status is always OK.
     #[allow(unused_variables)]
     fn sqrt(self, round: Round) -> StatusAnd<Self> {
         unimplemented!()
     }
-
-    /// IEEE-754R isSignMinus: Returns true if and only if the current value is
-    /// negative.
+    /// 
+    /// IEEE-754 _isSignMinus_: Returns true if and only if the current value has
+    /// a negative sign.
     ///
     /// This applies to zeros and NaNs as well.
-    fn is_negative(self) -> bool;
+    fn is_sign_negative(self) -> bool;
 
-    /// IEEE-754R isNormal: Returns true if and only if the current value is normal.
+    /// The inverse of [`is_negative`], returns true if and only if the current
+    /// value has a positive sign.
+    fn is_sign_positive(self) -> bool {
+        !self.is_sign_negative()
+    }
+
+    /// An alias for [`is_sign_negative`].
+    fn is_negative(self) -> bool {
+        self.is_sign_negative()
+    }
+
+    /// IEEE-754 _isNormal_: Returns true if and only if the current value is normal.
     ///
     /// This implies that the current value of the float is not zero, subnormal,
-    /// infinite, or NaN following the definition of normality from IEEE-754R.
+    /// infinite, or NaN following the definition of normality from IEEE-754.
     fn is_normal(self) -> bool {
         !self.is_denormal() && self.is_finite_non_zero()
     }
@@ -518,11 +555,11 @@ pub trait Float:
         self.category() == Category::Zero
     }
 
-    /// IEEE-754R isSubnormal(): Returns true if and only if the float is a
+    /// IEEE-754 _isSubnormal_: Returns true if and only if the float is a
     /// denormal.
     fn is_denormal(self) -> bool;
 
-    /// IEEE-754R isInfinite(): Returns true if and only if the float is infinity.
+    /// IEEE-754 _isInfinite_: Returns true if and only if the float is infinity.
     fn is_infinite(self) -> bool {
         self.category() == Category::Infinity
     }
@@ -584,8 +621,25 @@ pub trait Float:
         self.round_to_integral(Round::TowardZero).value.bitwise_eq(self)
     }
 
+    /// If the value is a signaling NaN, makes it quiet
+    fn make_quiet(self) -> Self;
+
     /// If this value has an exact multiplicative inverse, return it.
     fn get_exact_inverse(self) -> Option<Self>;
+
+    /// If this is an exact power of two, return the exponent while ignoring the
+    /// sign bit. If it's not an exact power of 2, return INT_MIN
+    fn get_exact_log2_abs(self) -> Option<ExpInt>;
+
+    /// If this is an exact power of two, return the exponent. Otherwise, return
+    /// `None`.
+    fn get_exact_log2(self) -> Option<ExpInt> {
+        if self.is_sign_negative() {
+            None
+        } else {
+            self.get_exact_log2_abs()
+        }
+    }
 
     /// Returns the exponent of the internal representation of the Float.
     ///

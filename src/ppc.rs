@@ -152,6 +152,7 @@ where
     const MIN_EXP: ExpInt = Fallback::<F>::MIN_EXP;
 
     const ZERO: Self = DoubleFloat(F::ZERO, F::ZERO);
+    const ONE: Self = DoubleFloat(F::ONE, F::ZERO);
 
     const INFINITY: Self = DoubleFloat(F::INFINITY, F::ZERO);
 
@@ -410,7 +411,7 @@ where
         self.0.bitwise_eq(rhs.0) && self.1.bitwise_eq(rhs.1)
     }
 
-    fn is_negative(self) -> bool {
+    fn is_sign_negative(self) -> bool {
         self.0.is_negative()
     }
 
@@ -433,8 +434,17 @@ where
         self.0.is_integer() && self.1.is_integer()
     }
 
+    fn make_quiet(self) -> Self {
+        Self(self.0.make_quiet(), self.1)
+    }
+
     fn get_exact_inverse(self) -> Option<Self> {
         Fallback::from(self).get_exact_inverse().map(Self::from)
+    }
+
+    fn get_exact_log2_abs(self) -> Option<ExpInt> {
+        // FIXME: not yet implemented upstream
+        None
     }
 
     fn ilogb(self) -> ExpInt {

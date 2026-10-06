@@ -1,6 +1,12 @@
 /target
 /Cargo.lock
+compile_commands.json
+.cache
+rustc-ice*
 
 # Fuzzing data/state.
 /fuzz/in*
 /fuzz/out*
+/fuzz/runs
+
+/.direnv

@@ -1,39 +1,78 @@
 name: CI
 on:
-  push:
-    branches-ignore: [main]
+  push: { branches: [main] }
   pull_request:
   merge_group:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -Dwarnings
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: full
+  LLVM_DOWNLOAD_DIR: "${{ github.workspace }}/llvm-downloads"
 
 jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       matrix:
-        build: [stable, beta, nightly]
         include:
-          - build: stable
-            os: ubuntu-latest
-            rust: stable
-          - build: beta
-            os: ubuntu-latest
-            rust: beta
-          - build: nightly
-            os: ubuntu-latest
-            rust: nightly
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v3
-    - name: Install Rust
-      run: rustup update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
+    - uses: actions/checkout@v6
+    - name: Install Dependencies
+      run: |
+        rustup update nightly --no-self-update
+        rustup default nightly
+        sudo apt-get install -y llvm  # Needed to build the C++ APFloat
+    # This should also cache LLVM since it downloads to `target/llvm-downloads`
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
+    - name: Cache LLVM source
+      uses: actions/cache@v6
+      with:
+        path: llvm-downloads
+        key: llvm-downloads-${{ hashFiles('Cargo.toml', 'etc/download-llvm.sh') }}
+    - name: Download llvm source
+      run: ./etc/download-llvm.sh
+
     - name: Build and run tests
-      run: cargo test
+      run: cargo test --workspace
+
+  msrv:
+    name: Check the MSRV
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTFLAGS: # No need to check warnings on old MSRV, unset `-Dwarnings`
+    steps:
+    - uses: actions/checkout@v6
+    - run: |
+        msrv="$(
+          cargo metadata --no-deps --format-version 1 |
+          jq -r '.packages | .[] | select(.name == "rustc_apfloat") | .rust_version'
+        )"
+        echo "MSRV: $msrv"
+        echo "MSRV=$msrv" >> "$GITHUB_ENV"
+    - name: Install Rust
+      run: rustup update "$MSRV" --no-self-update && rustup default "$MSRV"
+    - uses: Swatinem/rust-cache@v2
+    - run: |
+        # strip the fuzz crate that uses a newer edition
+        sed -i '/members =/d' Cargo.toml
+        cargo build --package rustc_apfloat
 
   rustfmt:
     name: Rustfmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
     - name: Install Rust
-      run: rustup update stable && rustup default stable && rustup component add rustfmt
+      run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt
     - run: cargo fmt --check
