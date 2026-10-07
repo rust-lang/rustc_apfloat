@@ -1,5 +1,8 @@
 //! Tests added to `rustc_apfloat`, that were not ported from the C++ code.
 
+use std::panic::panic_any;
+
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustc_apfloat::ieee::{BFloat, Double, Float8E4M3FN, Float8E5M2, Half, Quad, Single, X87DoubleExtended};
 use rustc_apfloat::{Float, Round, Status, StatusAnd};
 
@@ -520,34 +523,47 @@ fn fuzz_sqrt() {
     ] {
         println!("checking rounding mode {round:?}");
 
-        for xi in 0..=u32::MAX {
-            if xi % 100_000_000 == 0 {
-                println!("{xi}/{}", u32::MAX);
-            }
-            let x = f32::from_bits(xi);
-            let a = apfloat_sqrt(x, round);
-            let b = hardware_sqrt::sqrtf32(x, round);
+        let result = (0..u32::MAX)
+            .into_par_iter()
+            .map(|xi| {
+                // TODO: figure out if this still makes sense.
+                if xi % 100_000_000 == 0 {
+                    println!("{xi}/{}", u32::MAX);
+                }
 
-            // x86 preserves the sign on NaN inputs, others may not (e.g. aarch64 does not).
-            let eq_value = if cfg!(target_arch = "x86_64") {
-                a.value.bitwise_eq(b.value)
-            } else {
-                a.value.bitwise_eq(b.value) || (a.value.is_nan() && b.value.is_nan())
-            };
+                let x = f32::from_bits(xi);
+                let software = apfloat_sqrt(x, round);
+                let hardware = hardware_sqrt::sqrtf32(x, round);
 
-            if a.status != b.status || !eq_value {
-                panic!(
-                    "\
-                    incorrect result\n\
-                    xi: {xi:#010x}\n\
-                    x: {x:?}\n\
-                    a: {a:?} {af}\n\
-                    b: {b:?} {bf}\
-                    ",
-                    af = f32::from_bits(a.value.to_bits().try_into().unwrap()),
-                    bf = f32::from_bits(a.value.to_bits().try_into().unwrap()),
-                );
-            }
+                // x86 preserves the sign on NaN inputs, others may not (e.g. aarch64 does not).
+                let eq_value = if cfg!(target_arch = "x86_64") {
+                    software.value.bitwise_eq(hardware.value)
+                } else {
+                    software.value.bitwise_eq(hardware.value) || (software.value.is_nan() && hardware.value.is_nan())
+                };
+
+                if software.status != hardware.status || !eq_value {
+                    let str = format!(
+                        "\
+                        incorrect result\n\
+                        xi: {xi:#010x}\n\
+                        x: {x:?}\n\
+                        software: {software:?} {af}\n\
+                        hardware: {hardware:?} {bf}\
+                        ",
+                        af = f32::from_bits(software.value.to_bits().try_into().unwrap()),
+                        bf = f32::from_bits(software.value.to_bits().try_into().unwrap()),
+                    );
+
+                    Err(str)
+                } else {
+                    Ok(())
+                }
+            })
+            .collect::<Result<(), String>>();
+
+        if let Err(err) = result {
+            panic!("{}", err);
         }
     }
 }

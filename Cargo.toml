@@ -31,6 +31,7 @@ smallvec = { version = "1.11.0", features = ["const_generics", "union"] }
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }
+rayon = "1.10.0"
 
 # Speed up some things like decoding and corpus generation
 [profile.dev.package.rustc_apfloat-fuzz]
