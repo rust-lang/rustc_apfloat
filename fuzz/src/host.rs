@@ -342,6 +342,11 @@ mod x86 {
                 no_fp_env(rm, || x as Self)
             }
         }
+
+        // TODO: write the ASM for other rounding modes.
+        fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
+            no_fp_env(rm, || self.sqrt())
+        }
     }
 
     impl HostFloat for f32 {
@@ -479,6 +484,11 @@ mod x86 {
         fn from_single_r(x: f32, _rm: Round) -> Option<StatusAnd<Self>> {
             Some(Status::OK.and(x))
         }
+
+        // TODO: write the ASM for other rounding modes.
+        fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
+            no_fp_env(rm, || self.sqrt())
+        }
     }
 
     impl HostFloat for f64 {
@@ -615,6 +625,11 @@ mod x86 {
                 );
                 Some(status.and(dst))
             }
+        }
+
+        // TODO: write the ASM for other rounding modes.
+        fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
+            no_fp_env(rm, || self.sqrt())
         }
     }
 

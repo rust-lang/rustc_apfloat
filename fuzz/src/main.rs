@@ -1114,13 +1114,13 @@ fn eval_host<F: HostFloat>(
         // FIXME: rem disregards rounding mode
         Op::Rem => a.rem(b, rm)?,
         Op::MulAdd => a.mul_add_r(b, c, rm)?,
+        Op::Sqrt => a.sqrt(rm)?,
         // FIXME: the below operations discard a status. We should turn them into
         // unidirectional operations.
         Op::FToI128ToF => F::from_i128_r(a.to_i128_r(rm)?.value, rm)?,
         Op::FToU128ToF => F::from_u128_r(a.to_u128_r(rm)?.value, rm)?,
         Op::FToSingleToF => F::from_single_r(a.to_single_r(rm)?.value, rm)?,
         Op::FToDoubleToF => F::from_double_r(a.to_double_r(rm)?.value, rm)?,
-        Op::Sqrt => F::s
     };
 
     Some(res.map(F::to_bits))
