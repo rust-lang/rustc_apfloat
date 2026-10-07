@@ -19,8 +19,10 @@ impl<S: Semantics> IeeeFloat<S> {
             // https://doc.rust-lang.org/std/primitive.f32.html#nan-bit-patterns
             // (Thanks @programmerjake for the comment)
             Category::NaN => return IeeeDefaultExceptionHandling::result_from_nan(self),
-            // sqrt of negative number is NaN
-            _ if self.is_negative() => return Status::INVALID_OP.and(Self::NAN),
+            // sqrt of negative number is NaN.
+            // 
+            // according to fuzzing against x86_64 it's negative NaN.
+            _ if self.is_negative() => return Status::INVALID_OP.and(-Self::NAN),
             // sqrt(inf) = inf
             Category::Infinity => return Status::OK.and(Self::INFINITY),
             Category::Normal => (),
