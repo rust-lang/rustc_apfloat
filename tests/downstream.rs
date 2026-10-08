@@ -536,7 +536,10 @@ fn fuzz_sqrt() {
                 let hardware = hardware_sqrt::sqrtf32(x, round);
 
                 // x86 preserves the sign on NaN inputs, others may not (e.g. aarch64 does not).
-                let eq_value = if cfg!(target_arch = "x86_64") {
+                // 
+                // non-NaN inputs result in a newly-created NaN if negative,
+                // and newly-created NaN bit patterns from x86 have a negative sign while this library has a positive sign.
+                let eq_value = if cfg!(target_arch = "x86_64") && x.is_nan() {
                     software.value.bitwise_eq(hardware.value)
                 } else {
                     software.value.bitwise_eq(hardware.value) || (software.value.is_nan() && hardware.value.is_nan())

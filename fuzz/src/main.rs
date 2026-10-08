@@ -422,6 +422,7 @@ impl Op {
         Self::FToU128ToF,
         Self::FToSingleToF,
         Self::FToDoubleToF,
+        Self::Sqrt,
     ];
 
     pub fn airity(self) -> Arity {

@@ -22,7 +22,7 @@ impl<S: Semantics> IeeeFloat<S> {
             // sqrt of negative number is NaN.
             // 
             // according to fuzzing against x86_64 it's negative NaN.
-            _ if self.is_negative() => return Status::INVALID_OP.and(-Self::NAN),
+            _ if self.is_negative() => return Status::INVALID_OP.and(Self::NAN),
             // sqrt(inf) = inf
             Category::Infinity => return Status::OK.and(Self::INFINITY),
             Category::Normal => (),
