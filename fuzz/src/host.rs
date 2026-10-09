@@ -485,9 +485,19 @@ mod x86 {
             Some(Status::OK.and(x))
         }
 
-        // TODO: write the ASM for other rounding modes.
         fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
-            no_fp_env(rm, || self.sqrt())
+            // WARNING(miro): this is my first time writing inline ASM.
+            unsafe {
+                let output: f32;
+                
+                let status = with_fp_env!(
+                    rm,
+                    "sqrtss {x}, {y}",
+                    x = out(xmm_reg) output,
+                    y = in(xmm_reg) self,
+                );
+                Some(status.and(output))
+            }
         }
     }
 
@@ -629,7 +639,18 @@ mod x86 {
 
         // TODO: write the ASM for other rounding modes.
         fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
-            no_fp_env(rm, || self.sqrt())
+            // WARNING(miro): this is my second time writing inline ASM.
+            unsafe {
+                let output: f64;
+                
+                let status = with_fp_env!(
+                    rm,
+                    "sqrtsd {x}, {y}",
+                    x = out(xmm_reg) output,
+                    y = in(xmm_reg) self,
+                );
+                Some(status.and(output))
+            }
         }
     }
 
