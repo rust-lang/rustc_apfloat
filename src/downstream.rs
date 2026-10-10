@@ -4,6 +4,9 @@ use crate::{
 };
 
 impl<S: Semantics> IeeeFloat<S> {
+    // WARNING: make sure to manually run the fuzz_sqrt test when editing this function,
+    // it's very slow so it's ignored by default.
+    // `cargo test fuzz_sqrt -- --include-ignored`
     /// This is a spec conformant implementation of the IEEE Float sqrt function
     /// This is put in downstream.rs because this function hasn't been implemented in the upstream C++ version yet.
     pub(crate) fn ieee_sqrt(self, round: Round) -> StatusAnd<Self> {

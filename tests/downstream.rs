@@ -473,46 +473,8 @@ fn sqrt() {
 }
 
 #[test]
+#[ignore = "this test is very slow and causes a timeout in the CI"]
 fn fuzz_sqrt() {
-    // for round in [
-    //     Round::NearestTiesToEven,
-    //     Round::TowardPositive,
-    //     Round::TowardNegative,
-    //     Round::TowardZero,
-    // ] {
-    //     println!("checking rounding mode {round:?}");
-
-    //     for xi in 0..=u16::MAX {
-    //         if xi % 1_000 == 0 {
-    //             println!("{xi}/{}", u16::MAX);
-    //         }
-    //         let x = f16::from_bits(xi);
-    //         let a = apfloat_sqrtf16(x, round);
-    //         let b = hardware_sqrt::sqrtf16(x, round);
-
-    //         // x86 preserves the sign on NaN inputs, others may not (e.g. aarch64 does not).
-    //         let eq_value = if cfg!(target_arch = "x86_64") {
-    //             a.value.bitwise_eq(b.value)
-    //         } else {
-    //             a.value.bitwise_eq(b.value) || (a.value.is_nan() && b.value.is_nan())
-    //         };
-
-    //         if a.status != b.status || !eq_value {
-    //             panic!(
-    //                 "\
-    //                 incorrect result\n\
-    //                 xi: {xi:#010x}\n\
-    //                 x: {x:?}\n\
-    //                 a: {a:?} {af}\n\
-    //                 b: {b:?} {bf}\
-    //                 ",
-    //                 af = f32::from_bits(a.value.to_bits().try_into().unwrap()),
-    //                 bf = f32::from_bits(a.value.to_bits().try_into().unwrap()),
-    //             );
-    //         }
-    //     }
-    // }
-
     for round in [
         Round::NearestTiesToEven,
         Round::TowardPositive,
