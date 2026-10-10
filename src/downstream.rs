@@ -20,7 +20,7 @@ impl<S: Semantics> IeeeFloat<S> {
             // (Thanks @programmerjake for the comment)
             Category::NaN => return IeeeDefaultExceptionHandling::result_from_nan(self),
             // sqrt of negative number is NaN.
-            // 
+            //
             // according to fuzzing against x86_64 it's negative NaN.
             _ if self.is_negative() => return Status::INVALID_OP.and(Self::NAN),
             // sqrt(inf) = inf

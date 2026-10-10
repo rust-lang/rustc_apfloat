@@ -811,7 +811,7 @@ impl<F: FloatRepr> FuzzOpEvalOutputs<F> {
             println!("no rust result to fuzz against");
             return Ok(());
         };
-        
+
         if let Some(cxx_res) = self.cxx_apf {
             res.cxx_error = rs_apf.value != cxx_res.value;
             res.cxx_stat_error = rs_apf.status != cxx_res.status;
@@ -852,14 +852,7 @@ impl<F: FloatRepr> FuzzOpEvalOutputs<F> {
             }
             println!(", {:?})", cfg.rm);
 
-            print_float(
-                rs_apf,
-                "Rust / rustc_apfloat",
-                false,
-                false,
-                None,
-                None,
-            );
+            print_float(rs_apf, "Rust / rustc_apfloat", false, false, None, None);
             if let Some(cxx_res) = self.cxx_apf {
                 print_float(
                     cxx_res,
@@ -1106,7 +1099,7 @@ where
 
         res.map(F::from_ap)
     }));
-    
+
     match result {
         Ok(ok) => Some(ok),
         // HACK: this attempts to prevent ieee_sqrt's intentional panic on unsupported rounding modes

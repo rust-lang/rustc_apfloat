@@ -489,7 +489,7 @@ mod x86 {
             // WARNING(miro): this is my first time writing inline ASM.
             unsafe {
                 let output: f32;
-                
+
                 let status = with_fp_env!(
                     rm,
                     "sqrtss {x}, {y}",
@@ -642,7 +642,7 @@ mod x86 {
             // WARNING(miro): this is my second time writing inline ASM.
             unsafe {
                 let output: f64;
-                
+
                 let status = with_fp_env!(
                     rm,
                     "sqrtsd {x}, {y}",

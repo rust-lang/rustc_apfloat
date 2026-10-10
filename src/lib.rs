@@ -516,7 +516,7 @@ pub trait Float:
     fn sqrt(self, round: Round) -> StatusAnd<Self> {
         unimplemented!()
     }
-    /// 
+    ///
     /// IEEE-754 _isSignMinus_: Returns true if and only if the current value has
     /// a negative sign.
     ///
