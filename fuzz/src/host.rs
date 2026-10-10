@@ -120,7 +120,6 @@ impl_host_float!(f64, u64);
 #[cfg(target_has_reliable_f128)]
 impl_host_float!(f128, u128);
 
-// FIXME: this is missing sqrt impls.
 /// Assembly implementations on x86 which respect rounding mode.
 #[cfg(x86_sse2)]
 #[cfg(target_has_reliable_f16)]
@@ -345,7 +344,22 @@ mod x86 {
 
         // TODO: write the ASM for other rounding modes.
         fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
-            no_fp_env(rm, || self.sqrt())
+            if is_x86_feature_detected!("avx512fp16") {
+                // WARNING(miro): i'm unable to test this aa my CPU lacks AVX512
+                unsafe {
+                    let output: f16;
+
+                    let status = with_fp_env!(
+                        rm,
+                        "vsqrtsh {dest}, {src}, {src}",
+                        dest = out(xmm_reg) output,
+                        src = in(xmm_reg) self,
+                    );
+                    Some(status.and(output))
+                }
+            } else {
+                no_fp_env(rm, || self.sqrt())
+            }
         }
     }
 
