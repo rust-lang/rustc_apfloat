@@ -506,9 +506,9 @@ mod x86 {
 
                 let status = with_fp_env!(
                     rm,
-                    "sqrtss {x}, {y}",
-                    x = out(xmm_reg) output,
-                    y = in(xmm_reg) self,
+                    "sqrtss {dest}, {src}",
+                    dest = out(xmm_reg) output,
+                    src = in(xmm_reg) self,
                 );
                 Some(status.and(output))
             }
@@ -659,9 +659,9 @@ mod x86 {
 
                 let status = with_fp_env!(
                     rm,
-                    "sqrtsd {x}, {y}",
-                    x = out(xmm_reg) output,
-                    y = in(xmm_reg) self,
+                    "sqrtsd {dest}, {src}",
+                    dest = out(xmm_reg) output,
+                    src = in(xmm_reg) self,
                 );
                 Some(status.and(output))
             }
