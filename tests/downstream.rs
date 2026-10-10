@@ -1,7 +1,5 @@
 //! Tests added to `rustc_apfloat`, that were not ported from the C++ code.
 
-use std::panic::panic_any;
-
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustc_apfloat::ieee::{BFloat, Double, Float8E4M3FN, Float8E5M2, Half, Quad, Single, X87DoubleExtended};
 use rustc_apfloat::{Float, Round, Status, StatusAnd};
