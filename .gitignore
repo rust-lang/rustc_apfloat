@@ -8,3 +8,5 @@ rustc-ice*
 /fuzz/in*
 /fuzz/out*
 /fuzz/runs
+
+/.direnv

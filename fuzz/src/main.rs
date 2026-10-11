@@ -10,6 +10,9 @@ mod host;
 use io::IsTerminal;
 use io::Read;
 use std::io;
+use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
+use std::panic::resume_unwind;
 use std::path::PathBuf;
 use std::{fmt, fs};
 
@@ -406,6 +409,7 @@ pub enum Op {
     FToU128ToF = 8,
     FToSingleToF = 9,
     FToDoubleToF = 10,
+    Sqrt = 11,
 }
 
 impl Op {
@@ -421,6 +425,7 @@ impl Op {
         Self::FToU128ToF,
         Self::FToSingleToF,
         Self::FToDoubleToF,
+        Self::Sqrt,
     ];
 
     pub fn airity(self) -> Arity {
@@ -436,7 +441,12 @@ impl Op {
             Op::FToU128ToF => Arity::Unary,
             Op::FToSingleToF => Arity::Unary,
             Op::FToDoubleToF => Arity::Unary,
+            Self::Sqrt => Arity::Binary,
         }
+    }
+
+    fn no_cxx(self) -> bool {
+        self == Self::Sqrt
     }
 }
 
@@ -682,8 +692,7 @@ where
     // Evaluate the APFloat version as well as all possible references.
     FuzzOpEvalOutputs {
         rs_apf: eval_rust_ap(cfg.op, cfg.rm, a, b, c),
-        cxx_apf: cfg
-            .run_cxx
+        cxx_apf: (cfg.run_cxx && !cfg.op.no_cxx())
             .then(|| F::cxx_apf_eval_fuzz_op(cfg.op, cfg.rm, a, b, c)),
         host: cfg
             .run_host
@@ -719,7 +728,7 @@ fn decode_operands<F: FloatRepr>(op: Op, data: &[u8]) -> Result<(F, F, F), Decod
 /// Collected outputs from all input sources.
 #[derive(Clone, Debug)]
 struct FuzzOpEvalOutputs<F> {
-    rs_apf: StatusAnd<F>,
+    rs_apf: Option<StatusAnd<F>>,
     cxx_apf: Option<StatusAnd<F>>,
     host: Option<StatusAnd<F>>,
 }
@@ -796,26 +805,33 @@ impl<F: FloatRepr> FuzzOpEvalOutputs<F> {
             host_stat_ignore: (!F::host_supports_fp_env()).then_some("host does not support fpenv"),
         };
 
+        // If there is no rust result then there's nothing to fuzz against.
+        // currently this case happens if rust intentionally panics.
+        let Some(rs_apf) = self.rs_apf else {
+            println!("no rust result to fuzz against");
+            return Ok(());
+        };
+
         if let Some(cxx_res) = self.cxx_apf {
-            res.cxx_error = self.rs_apf.value != cxx_res.value;
-            res.cxx_stat_error = self.rs_apf.status != cxx_res.status;
+            res.cxx_error = rs_apf.value != cxx_res.value;
+            res.cxx_stat_error = rs_apf.status != cxx_res.status;
             res.cxx_ignore = res
                 .cxx_ignore
-                .or_else(|| ignore_cxx(cfg, a, b, c, self.rs_apf.value, cxx_res.value));
+                .or_else(|| ignore_cxx(cfg, a, b, c, rs_apf.value, cxx_res.value));
             res.cxx_stat_ignore = res
                 .cxx_stat_ignore
-                .or_else(|| ignore_cxx_status(cfg, a, b, c, self.rs_apf, cxx_res));
+                .or_else(|| ignore_cxx_status(cfg, a, b, c, rs_apf, cxx_res));
         }
 
         if let Some(host_res) = self.host {
-            res.host_error = self.rs_apf.value != host_res.value;
-            res.host_stat_error = self.rs_apf.status != host_res.status;
+            res.host_error = rs_apf.value != host_res.value;
+            res.host_stat_error = rs_apf.status != host_res.status;
             res.host_ignore = res
                 .host_ignore
-                .or_else(|| ignore_host(cfg, a, b, c, self.rs_apf.value, host_res.value));
+                .or_else(|| ignore_host(cfg, a, b, c, rs_apf.value, host_res.value));
             res.host_stat_ignore = res
                 .host_stat_ignore
-                .or_else(|| ignore_host_status(cfg, a, b, c, self.rs_apf, host_res));
+                .or_else(|| ignore_host_status(cfg, a, b, c, rs_apf, host_res));
         }
 
         let failure = (res.cxx_error && res.cxx_ignore.is_none())
@@ -836,14 +852,7 @@ impl<F: FloatRepr> FuzzOpEvalOutputs<F> {
             }
             println!(", {:?})", cfg.rm);
 
-            print_float(
-                self.rs_apf,
-                "Rust / rustc_apfloat",
-                false,
-                false,
-                None,
-                None,
-            );
+            print_float(rs_apf, "Rust / rustc_apfloat", false, false, None, None);
             if let Some(cxx_res) = self.cxx_apf {
                 print_float(
                     cxx_res,
@@ -1052,41 +1061,58 @@ fn ignore_host_status<F: FloatRepr>(
 }
 
 /// Execute the requested operation as an AP float with the given rounding mode.
-fn eval_rust_ap<F: FloatRepr>(op: Op, rm: Round, a: F, b: F, c: F) -> StatusAnd<F>
+fn eval_rust_ap<F: FloatRepr>(op: Op, rm: Round, a: F, b: F, c: F) -> Option<StatusAnd<F>>
 where
     Single: FloatConvert<<F as FloatRepr>::RustcApFloat>,
     Double: FloatConvert<<F as FloatRepr>::RustcApFloat>,
 {
-    let res = match op {
-        Op::Neg => Status::OK.and(-a.to_ap()),
-        Op::Add => a.to_ap().add_r(b.to_ap(), rm),
-        Op::Sub => a.to_ap().sub_r(b.to_ap(), rm),
-        Op::Mul => a.to_ap().mul_r(b.to_ap(), rm),
-        Op::Div => a.to_ap().div_r(b.to_ap(), rm),
-        // FIXME: rem disregards rounding mode
-        Op::Rem => a.to_ap() % b.to_ap(),
-        Op::MulAdd => a.to_ap().mul_add_r(b.to_ap(), c.to_ap(), rm),
-        // FIXME: the below operations discard a status. We should turn them into
-        // unidirectional operations.
-        Op::FToI128ToF => {
-            F::RustcApFloat::from_i128_r(a.to_ap().to_i128_r(128, rm, &mut false).value, rm)
-        }
-        Op::FToU128ToF => {
-            F::RustcApFloat::from_u128_r(a.to_ap().to_u128_r(128, rm, &mut false).value, rm)
-        }
-        Op::FToSingleToF => FloatConvert::<F::RustcApFloat>::convert_r(
-            FloatConvert::<ieee::Single>::convert_r(a.to_ap(), rm, &mut false).value,
-            rm,
-            &mut false,
-        ),
-        Op::FToDoubleToF => FloatConvert::<F::RustcApFloat>::convert_r(
-            FloatConvert::<ieee::Double>::convert_r(a.to_ap(), rm, &mut false).value,
-            rm,
-            &mut false,
-        ),
-    };
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let res = match op {
+            Op::Neg => Status::OK.and(-a.to_ap()),
+            Op::Add => a.to_ap().add_r(b.to_ap(), rm),
+            Op::Sub => a.to_ap().sub_r(b.to_ap(), rm),
+            Op::Mul => a.to_ap().mul_r(b.to_ap(), rm),
+            Op::Div => a.to_ap().div_r(b.to_ap(), rm),
+            // FIXME: rem disregards rounding mode
+            Op::Rem => a.to_ap() % b.to_ap(),
+            Op::MulAdd => a.to_ap().mul_add_r(b.to_ap(), c.to_ap(), rm),
+            // FIXME: the below operations discard a status. We should turn them into
+            // unidirectional operations.
+            Op::FToI128ToF => {
+                F::RustcApFloat::from_i128_r(a.to_ap().to_i128_r(128, rm, &mut false).value, rm)
+            }
+            Op::FToU128ToF => {
+                F::RustcApFloat::from_u128_r(a.to_ap().to_u128_r(128, rm, &mut false).value, rm)
+            }
+            Op::FToSingleToF => FloatConvert::<F::RustcApFloat>::convert_r(
+                FloatConvert::<ieee::Single>::convert_r(a.to_ap(), rm, &mut false).value,
+                rm,
+                &mut false,
+            ),
+            Op::FToDoubleToF => FloatConvert::<F::RustcApFloat>::convert_r(
+                FloatConvert::<ieee::Double>::convert_r(a.to_ap(), rm, &mut false).value,
+                rm,
+                &mut false,
+            ),
+            Op::Sqrt => a.to_ap().sqrt(rm),
+        };
 
-    res.map(F::from_ap)
+        res.map(F::from_ap)
+    }));
+
+    match result {
+        Ok(ok) => Some(ok),
+        // HACK: this attempts to prevent ieee_sqrt's intentional panic on unsupported rounding modes
+        // from causing false-positive crashes.
+        Err(payload) if let Some(&message) = payload.downcast_ref::<&'static str>() => {
+            if message == "not implemented: unsupported rounding mode" {
+                None
+            } else {
+                resume_unwind(Box::new(message))
+            }
+        }
+        Err(payload) => resume_unwind(payload),
+    }
 }
 
 /// Execute the requested operation on the host with the given rounding mode, if possible. If
@@ -1111,6 +1137,7 @@ fn eval_host<F: HostFloat>(
         // FIXME: rem disregards rounding mode
         Op::Rem => a.rem(b, rm)?,
         Op::MulAdd => a.mul_add_r(b, c, rm)?,
+        Op::Sqrt => a.sqrt(rm)?,
         // FIXME: the below operations discard a status. We should turn them into
         // unidirectional operations.
         Op::FToI128ToF => F::from_i128_r(a.to_i128_r(rm)?.value, rm)?,

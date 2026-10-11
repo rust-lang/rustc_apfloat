@@ -510,6 +510,13 @@ pub trait Float:
         }
     }
 
+    /// IEEE-754R _sqrt_: Returns the correctly rounded square root of the current value
+    /// Note: we currently don't support raising any exceptions from sqrt, so the result is always exact and the status is always OK.
+    #[allow(unused_variables)]
+    fn sqrt(self, round: Round) -> StatusAnd<Self> {
+        unimplemented!()
+    }
+    ///
     /// IEEE-754 _isSignMinus_: Returns true if and only if the current value has
     /// a negative sign.
     ///
@@ -809,5 +816,6 @@ macro_rules! float_common_impls {
     };
 }
 
+pub mod downstream;
 pub mod ieee;
 pub mod ppc;

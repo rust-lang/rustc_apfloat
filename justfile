@@ -16,8 +16,8 @@ _default:
     {{ just_executable() }} --list
 
 # Run non-fuzzing tests
-test:
-    cargo test --workspace
+test *names:
+    cargo test --workspace {{names}}
 
 # Create directories and build the executable, but don't start fuzzing.
 fuzz-build:

@@ -24,6 +24,7 @@ pub trait HostFloat: Copy + Sized + fmt::Debug {
     fn from_double_r(x: f64, rm: Round) -> Option<StatusAnd<Self>>;
     fn to_single_r(self, rm: Round) -> Option<StatusAnd<f32>>;
     fn from_single_r(x: f32, rm: Round) -> Option<StatusAnd<Self>>;
+    fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>>;
 }
 
 macro_rules! impl_host_float {
@@ -84,6 +85,10 @@ macro_rules! impl_host_float {
             }
             fn from_single_r(x: f32, rm: Round) -> Option<StatusAnd<Self>> {
                 no_fp_env(rm, || x as Self)
+            }
+
+            fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
+                no_fp_env(rm, || self.sqrt())
             }
         }
     };
@@ -336,6 +341,26 @@ mod x86 {
                 no_fp_env(rm, || x as Self)
             }
         }
+
+        // TODO: write the ASM for other rounding modes.
+        fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
+            if is_x86_feature_detected!("avx512fp16") {
+                // WARNING(miro): i'm unable to test this aa my CPU lacks AVX512
+                unsafe {
+                    let output: f16;
+
+                    let status = with_fp_env!(
+                        rm,
+                        "vsqrtsh {dest}, {src}, {src}",
+                        dest = out(xmm_reg) output,
+                        src = in(xmm_reg) self,
+                    );
+                    Some(status.and(output))
+                }
+            } else {
+                no_fp_env(rm, || self.sqrt())
+            }
+        }
     }
 
     impl HostFloat for f32 {
@@ -473,6 +498,21 @@ mod x86 {
         fn from_single_r(x: f32, _rm: Round) -> Option<StatusAnd<Self>> {
             Some(Status::OK.and(x))
         }
+
+        fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
+            // WARNING(miro): this is my first time writing inline ASM.
+            unsafe {
+                let output: f32;
+
+                let status = with_fp_env!(
+                    rm,
+                    "sqrtss {dest}, {src}",
+                    dest = out(xmm_reg) output,
+                    src = in(xmm_reg) self,
+                );
+                Some(status.and(output))
+            }
+        }
     }
 
     impl HostFloat for f64 {
@@ -608,6 +648,22 @@ mod x86 {
                     y = out(xmm_reg) dst,
                 );
                 Some(status.and(dst))
+            }
+        }
+
+        // TODO: write the ASM for other rounding modes.
+        fn sqrt(self, rm: Round) -> Option<StatusAnd<Self>> {
+            // WARNING(miro): this is my second time writing inline ASM.
+            unsafe {
+                let output: f64;
+
+                let status = with_fp_env!(
+                    rm,
+                    "sqrtsd {dest}, {src}",
+                    dest = out(xmm_reg) output,
+                    src = in(xmm_reg) self,
+                );
+                Some(status.and(output))
             }
         }
     }

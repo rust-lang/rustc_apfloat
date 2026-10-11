@@ -1049,9 +1049,9 @@ impl<S: Semantics> fmt::Debug for IeeeFloat<S> {
 // but it's a bit too long to keep repeating in the Rust port for all ops.
 // FIXME(eddyb) find a better name/organization for all of this functionality
 // (`IeeeDefaultExceptionHandling` doesn't have a counterpart in the C++ code).
-struct IeeeDefaultExceptionHandling;
+pub(crate) struct IeeeDefaultExceptionHandling;
 impl IeeeDefaultExceptionHandling {
-    fn result_from_nan<S: Semantics>(mut r: IeeeFloat<S>) -> StatusAnd<IeeeFloat<S>> {
+    pub fn result_from_nan<S: Semantics>(mut r: IeeeFloat<S>) -> StatusAnd<IeeeFloat<S>> {
         assert!(r.is_nan());
 
         let status = if r.is_signaling() {
@@ -1096,7 +1096,7 @@ impl IeeeDefaultExceptionHandling {
         status.and(r)
     }
 
-    fn binop_result_from_either_nan<S: Semantics>(a: IeeeFloat<S>, b: IeeeFloat<S>) -> StatusAnd<IeeeFloat<S>> {
+    pub fn binop_result_from_either_nan<S: Semantics>(a: IeeeFloat<S>, b: IeeeFloat<S>) -> StatusAnd<IeeeFloat<S>> {
         let r = match (a.category(), b.category()) {
             (Category::NaN, _) => a,
             (_, Category::NaN) => b,
@@ -2182,6 +2182,10 @@ impl<S: Semantics> Float for IeeeFloat<S> {
             *exp += 1;
         }
         self.scalbn_r(-*exp, round)
+    }
+
+    fn sqrt(self, round: Round) -> StatusAnd<Self> {
+        self.ieee_sqrt(round)
     }
 }
 
